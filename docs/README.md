@@ -27,6 +27,15 @@ Use these docs for decisions, troubleshooting, and bundle adaptations that futur
 - [`bundle-notes/`](./bundle-notes/)
   - Bundle-specific adaptation notes for inspected Codex builds.
 
+## Agent Workflows
+
+- [`.agents/skills/codexfast-windows-update-audit/SKILL.md`](../.agents/skills/codexfast-windows-update-audit/SKILL.md)
+  - Strictly read-only Windows MSIX update audit using `inspect --json`.
+- [`.agents/skills/codexfast-development-flow/SKILL.md`](../.agents/skills/codexfast-development-flow/SKILL.md)
+  - Source, test, generated CLI, and documentation workflow for authorized changes.
+- [`.agents/skills/codexfast-release-flow/SKILL.md`](../.agents/skills/codexfast-release-flow/SKILL.md)
+  - GitHub-only release workflow; npm publication is prohibited for this repository.
+
 ## Writing Rules
 
 - Record reusable conclusions, not raw chat history.

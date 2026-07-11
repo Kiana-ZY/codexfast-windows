@@ -59,9 +59,11 @@ corepack pnpm build
 node ./bin/codexfast launch
 ```
 
-查看帮助或版本：
+检查 Windows 兼容性、查看帮助或版本：
 
 ```text
+node ./bin/codexfast inspect
+node ./bin/codexfast inspect --json
 node ./bin/codexfast help
 node ./bin/codexfast version
 ```
@@ -78,6 +80,8 @@ q) Quit
 | Command | 说明 |
 | --- | --- |
 | `node ./bin/codexfast launch` | 启动当前前台 Codex runtime patch 会话。使用 Codex 时保持该命令运行。 |
+| `node ./bin/codexfast inspect` | 不启动 Codex，只读检查 Windows MSIX 身份和 8 个必需 runtime targets。 |
+| `node ./bin/codexfast inspect --json` | 以单个、带 schema 版本的 JSON 文档输出同一份 Windows 静态审计，供自动化使用。 |
 | `node ./bin/codexfast help` | 显示帮助。 |
 | `node ./bin/codexfast version` | 显示 codexfast 版本。 |
 

@@ -20,6 +20,7 @@ This repo is high risk because it launches and can test runtime patches against 
 - Updating repo docs because behavior, support scope, or release guidance changed
 
 Do not use this skill for release-only work. Use `codexfast-release-flow` for that.
+For a strictly read-only Windows update check, use `codexfast-windows-update-audit` first. Enter this development flow only when the user explicitly asks to adapt or change the repository.
 
 ## Core Rules
 
@@ -67,14 +68,14 @@ Do not use this skill for release-only work. Use `codexfast-release-flow` for th
    - Update `README.md` when usage, compatibility policy, supported features, or recovery guidance changes.
    - Update `README.zh-CN.md` with the same behavior changes.
    - Keep README compatibility lists newest-first when adding or reordering verified Codex builds.
-   - Keep public README usage focused on `launch`, `help`, and `version`.
+   - Keep public README usage focused on `launch`, `inspect`, `help`, and `version`.
    - Update `AGENTS.md` when the maintenance checklist or validation expectations change.
    - Update `CHANGELOG.md` under the active unreleased or target release section.
 
 5. Verify before calling the work done.
    - Run `pnpm build:check`.
    - Run `pnpm typecheck`.
-   - Run `pnpm test` or, for a narrow local check, `bash test/re-sign-flow.sh`.
+   - Run `pnpm test`. For a narrow Windows compatibility change, run `pnpm test:windows` before the full suite.
    - If package metadata changed, also inspect `package.json` and `bin/codexfast`.
    - If packaging or docs changed materially, run `pnpm pack --dry-run`.
    - For runtime launch changes, run a real installed-app `launch` pass when possible, then confirm `app.asar`, `Info.plist`, and the app signature are unchanged.

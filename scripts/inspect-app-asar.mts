@@ -5,13 +5,17 @@ import { fileURLToPath } from "node:url";
 
 function usage(): never {
   console.error(
-    "Usage: pnpm exec tsx scripts/inspect-app-asar.mts <path-to-app.asar>",
+    "Usage: pnpm exec tsx scripts/inspect-app-asar.mts <path-to-app.asar> [--json]",
   );
   process.exit(1);
 }
 
 const inputPath = process.argv[2];
 if (!inputPath || inputPath === "--help" || inputPath === "-h") {
+  usage();
+}
+const inspectArgs = process.argv.slice(3);
+if (inspectArgs.some((arg) => arg !== "--json")) {
   usage();
 }
 
@@ -37,7 +41,11 @@ if (!existsSync(generatedCli)) {
   process.exit(1);
 }
 
-const result = spawnSync(process.execPath, [generatedCli, "inspect"], {
+const result = spawnSync(process.execPath, [
+  generatedCli,
+  "inspect",
+  ...inspectArgs,
+], {
   cwd: rootDir,
   env: {
     ...process.env,

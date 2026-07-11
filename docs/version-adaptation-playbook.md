@@ -2,6 +2,8 @@
 
 Use this playbook when a new `Codex.app` build appears and `codexfast` needs to adapt safely.
 
+On Windows, run the strictly read-only `codexfast-windows-update-audit` Skill before entering this development workflow. The audit must not edit the repository or launch Codex.
+
 ## Goal
 
 Determine whether the new build is unchanged enough for the existing signature profile, update patch logic if needed, and only claim real support after manual validation. macOS remains strict-whitelist based; Windows may use a signature-gated unlisted state without treating it as verified support.
@@ -13,10 +15,11 @@ For Windows MSIX adaptations, use `AppxManifest.xml` identity/version plus the m
 1. Identify the build.
    - Read `CFBundleShortVersionString`
    - Read `CFBundleVersion`
-   - Record the pair in `docs/compatibility-matrix.md` as `investigating` if it is new
+   - On Windows, collect the installed package identity through the read-only audit before editing docs
+   - Record a new build as `investigating` only after the audit is complete and adaptation work is explicitly authorized
 
 2. Inspect before launching.
-   - On Windows, run `node .\bin\codexfast inspect`; it does not start Codex
+   - On Windows, run `node .\bin\codexfast inspect --json`; it does not start Codex or inspect Provider configuration
    - Record whether the result is `whitelist-signatures`, `signature-compatible update`, or blocked
    - Treat `signature-compatible update` as a static compatibility result only, not a real-app support claim
    - On macOS, check whether the detected version/build is already whitelisted before attempting launch

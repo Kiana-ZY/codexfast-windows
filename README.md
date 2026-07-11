@@ -66,9 +66,11 @@ corepack pnpm build
 node ./bin/codexfast launch
 ```
 
-Print help or the installed package version:
+Inspect Windows compatibility, print help, or print the installed package version:
 
 ```text
+node ./bin/codexfast inspect
+node ./bin/codexfast inspect --json
 node ./bin/codexfast help
 node ./bin/codexfast version
 ```
@@ -85,6 +87,8 @@ q) Quit
 | Command | Purpose |
 | --- | --- |
 | `node ./bin/codexfast launch` | Launch Codex with runtime patches for the current foreground session. Keep this command running while you use Codex. |
+| `node ./bin/codexfast inspect` | Inspect Windows MSIX identity and all eight required runtime targets without launching Codex. |
+| `node ./bin/codexfast inspect --json` | Emit the same static Windows audit as one schema-versioned JSON document for automation. |
 | `node ./bin/codexfast help` | Show help. |
 | `node ./bin/codexfast version` | Print the codexfast version. |
 

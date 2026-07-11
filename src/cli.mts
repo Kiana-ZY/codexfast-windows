@@ -13,6 +13,7 @@ import {
 } from './cli-command-policy.mts';
 import { checkRequirements } from './cli-app-environment.mts';
 import { createCodexfastContext } from './cli-context.mts';
+import { runInspectCommand } from './cli-inspect.mts';
 import {
   printActionHeaderBlock,
 } from './cli-output.mts';
@@ -78,7 +79,7 @@ function printUsage(): void {
   printLine('');
   printLine('Commands:');
   printLine('  launch             Launch Codex with runtime patches');
-  printLine('  inspect            Inspect Windows compatibility without launching Codex');
+  printLine('  inspect [--json]   Inspect Windows compatibility without launching Codex');
   printLine('  version            Print the codexfast version');
   printLine('  help               Show this help');
 }
@@ -182,6 +183,17 @@ async function main(): Promise<number> {
     return 1;
   }
 
+  if (isPublicInspectCommand(command)) {
+    return runInspectCommand({
+      context,
+      args: args.slice(1),
+      packageVersion: __PACKAGE_VERSION__,
+      patcherSource: __PATCHER_SOURCE__,
+      supportedWindowsAppVersions: SUPPORTED_WINDOWS_APP_VERSIONS,
+      printActionHeader: () => printActionHeader('inspect'),
+    });
+  }
+
   if (
     !checkRequirements({
       context,
@@ -191,23 +203,6 @@ async function main(): Promise<number> {
     })
   ) {
     return 1;
-  }
-
-  if (isPublicInspectCommand(command)) {
-    if (context.platform !== 'win32') {
-      printLine('The inspect command is currently available for Windows MSIX only.');
-      return 1;
-    }
-    printActionHeader('inspect');
-    printLine('Verified runtime target resources:');
-    for (const target of context.runtimeCompatibility.targets) {
-      printLine(
-        `  ${target.label} [${target.id}] ${target.state} ${target.archivePath} -> ${target.runtimePath}`,
-      );
-    }
-    printLine('');
-    printLine('Compatibility inspection completed without launching Codex.');
-    return 0;
   }
 
   if (isPublicLaunchCommand(command)) {

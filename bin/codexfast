@@ -969,6 +969,228 @@ function createCodexfastContext(appBundle = process.env.CODEXFAST_APP_BUNDLE, pl
         runtimeCompatibility: emptyRuntimeCompatibilityProfile(),
     };
 }
+function parseInspectArguments(args) {
+    const jsonCount = args.filter((arg) => arg === "--json").length;
+    const unsupported = args.filter((arg) => arg !== "--json");
+    if (unsupported.length > 0) {
+        return {
+            json: jsonCount > 0,
+            error: `Unknown inspect option: ${unsupported.join(", ")}.`,
+        };
+    }
+    if (jsonCount > 1) {
+        return {
+            json: true,
+            error: "inspect accepts --json at most once.",
+        };
+    }
+    return { json: jsonCount === 1, error: null };
+}
+function inspectScope() {
+    return {
+        readOnly: true,
+        codexLaunched: false,
+        runtimeVerificationPerformed: false,
+        providerConfigurationInspected: false,
+    };
+}
+function inspectSelection(environment) {
+    return {
+        overrides: {
+            bundle: Boolean(environment.CODEXFAST_APP_BUNDLE?.trim()),
+            executable: Boolean(environment.CODEXFAST_APP_EXECUTABLE?.trim()),
+            appUserModelId: Boolean(environment.CODEXFAST_APP_USER_MODEL_ID?.trim()),
+        },
+    };
+}
+function inspectPackage(context) {
+    if (!context.metadata.packageName) {
+        return null;
+    }
+    return {
+        name: context.metadata.packageName,
+        packageFullName: context.metadata.packageFullName,
+        version: context.metadata.version,
+        versionKey: context.metadata.versionKey,
+        publisher: context.metadata.publisher,
+        packageFamilyName: context.metadata.packageFamilyName,
+        applicationId: context.metadata.applicationId,
+        appUserModelId: context.metadata.appUserModelId,
+        registrationVerified: context.metadata.packageRegistrationVerified,
+        registeredInstallLocations: [
+            ...context.metadata.registeredPackageInstallLocations,
+        ],
+    };
+}
+function inspectPaths(context) {
+    if (!context.paths.bundle) {
+        return null;
+    }
+    return {
+        bundle: context.paths.bundle,
+        resources: context.paths.resources,
+        appxManifest: context.paths.appxManifest,
+        executable: context.paths.executable,
+        appAsar: context.paths.appAsar,
+    };
+}
+function baseInspectReport(context, packageVersion, environment) {
+    return {
+        schemaVersion: 1,
+        command: "inspect",
+        tool: {
+            name: "codexfast-windows",
+            version: packageVersion,
+        },
+        platform: context.platform,
+        scope: inspectScope(),
+        selection: inspectSelection(environment),
+        package: inspectPackage(context),
+        paths: inspectPaths(context),
+    };
+}
+function createInspectFailureReport(context, packageVersion, environment, error) {
+    return {
+        ...baseInspectReport(context, packageVersion, environment),
+        ok: false,
+        compatibility: null,
+        snapshots: null,
+        resourcePaths: [],
+        targets: [],
+        error,
+    };
+}
+function createInspectSuccessReport(context, packageVersion, environment) {
+    const profile = context.runtimeCompatibility;
+    if (profile.source !== "whitelist-signatures" &&
+        profile.source !== "signature-compatible-update") {
+        throw new Error("Windows runtime compatibility profile is missing.");
+    }
+    return {
+        ...baseInspectReport(context, packageVersion, environment),
+        ok: true,
+        compatibility: {
+            source: profile.source,
+            classification: profile.source === "whitelist-signatures"
+                ? "recorded-static-pass"
+                : "unlisted-signature-compatible",
+            description: context.metadata.compatibility,
+            staticGatePassed: true,
+            runtimeVerificationRequired: true,
+            requiredTargetCount: profile.targets.length,
+            verifiedTargetCount: profile.targets.length,
+        },
+        snapshots: {
+            appxManifest: {
+                path: context.paths.appxManifest,
+                sha256: profile.appxManifestSha256,
+                size: profile.appxManifestSize,
+                mtimeMs: profile.appxManifestMtimeMs,
+            },
+            appAsar: {
+                path: context.paths.appAsar,
+                sha256: profile.appAsarSha256,
+                size: profile.appAsarSize,
+                mtimeMs: profile.appAsarMtimeMs,
+            },
+            appxSignatureFile: {
+                path: profile.appxSignaturePath,
+                sha256: profile.appxSignatureSha256,
+                size: profile.appxSignatureSize,
+                mtimeMs: profile.appxSignatureMtimeMs,
+            },
+        },
+        resourcePaths: [...profile.resourcePaths],
+        targets: profile.targets.map((target) => ({ ...target })),
+        error: null,
+    };
+}
+function writeInspectJson(writeLine, report) {
+    writeLine(JSON.stringify(report, null, 2));
+}
+function runInspectCommand(options) {
+    const environment = options.environment ?? process.env;
+    const writeLine = options.writeLine ?? printLine;
+    const parsed = parseInspectArguments(options.args);
+    if (parsed.error) {
+        const error = {
+            stage: "arguments",
+            code: "INVALID_ARGUMENTS",
+            message: parsed.error,
+        };
+        if (parsed.json) {
+            writeInspectJson(writeLine, createInspectFailureReport(options.context, options.packageVersion, environment, error));
+        }
+        else {
+            writeLine(error.message);
+            writeLine("Usage: codexfast inspect [--json]");
+        }
+        return 1;
+    }
+    if (options.context.platform !== "win32") {
+        const error = {
+            stage: "platform",
+            code: "UNSUPPORTED_PLATFORM",
+            message: "The inspect command is currently available for Windows MSIX only.",
+        };
+        if (parsed.json) {
+            writeInspectJson(writeLine, createInspectFailureReport(options.context, options.packageVersion, environment, error));
+        }
+        else {
+            writeLine(error.message);
+        }
+        return 1;
+    }
+    const loadEnvironment = options.loadEnvironment ?? loadWindowsAppEnvironment;
+    try {
+        loadEnvironment(options.context, options.supportedWindowsAppVersions);
+    }
+    catch (caught) {
+        const error = {
+            stage: "discovery",
+            code: "WINDOWS_APP_DISCOVERY_FAILED",
+            message: asError(caught).message,
+        };
+        if (parsed.json) {
+            writeInspectJson(writeLine, createInspectFailureReport(options.context, options.packageVersion, environment, error));
+        }
+        else {
+            writeLine(`Windows app discovery failed: ${error.message}`);
+        }
+        return 1;
+    }
+    const applyCompatibility = options.applyCompatibility ??
+        applyWindowsRuntimeCompatibility;
+    try {
+        applyCompatibility(options.context, options.patcherSource, options.supportedWindowsAppVersions);
+    }
+    catch (caught) {
+        const error = {
+            stage: "compatibility",
+            code: "WINDOWS_RUNTIME_COMPATIBILITY_FAILED",
+            message: asError(caught).message,
+        };
+        if (parsed.json) {
+            writeInspectJson(writeLine, createInspectFailureReport(options.context, options.packageVersion, environment, error));
+        }
+        else {
+            writeLine(`Windows runtime compatibility failed: ${error.message}`);
+        }
+        return 1;
+    }
+    if (parsed.json) {
+        writeInspectJson(writeLine, createInspectSuccessReport(options.context, options.packageVersion, environment));
+        return 0;
+    }
+    options.printActionHeader();
+    writeLine("Verified runtime target resources:");
+    for (const target of options.context.runtimeCompatibility.targets) {
+        writeLine(`  ${target.label} [${target.id}] ${target.state} ${target.archivePath} -> ${target.runtimePath}`);
+    }
+    writeLine("");
+    writeLine("Compatibility inspection completed without launching Codex.");
+    return 0;
+}
 function printActionHeaderBlock(action, details) {
     printLine("");
     printLine(`Action: ${action}`);
@@ -3873,7 +4095,7 @@ function printUsage() {
     printLine('');
     printLine('Commands:');
     printLine('  launch             Launch Codex with runtime patches');
-    printLine('  inspect            Inspect Windows compatibility without launching Codex');
+    printLine('  inspect [--json]   Inspect Windows compatibility without launching Codex');
     printLine('  version            Print the codexfast version');
     printLine('  help               Show this help');
 }
@@ -3962,6 +4184,16 @@ async function main() {
         printUsage();
         return 1;
     }
+    if (isPublicInspectCommand(command)) {
+        return runInspectCommand({
+            context,
+            args: args.slice(1),
+            packageVersion: __PACKAGE_VERSION__,
+            patcherSource: __PATCHER_SOURCE__,
+            supportedWindowsAppVersions: SUPPORTED_WINDOWS_APP_VERSIONS,
+            printActionHeader: () => printActionHeader('inspect'),
+        });
+    }
     if (!checkRequirements({
         context,
         supportedAppVersions: SUPPORTED_APP_VERSIONS,
@@ -3969,20 +4201,6 @@ async function main() {
         patcherSource: __PATCHER_SOURCE__,
     })) {
         return 1;
-    }
-    if (isPublicInspectCommand(command)) {
-        if (context.platform !== 'win32') {
-            printLine('The inspect command is currently available for Windows MSIX only.');
-            return 1;
-        }
-        printActionHeader('inspect');
-        printLine('Verified runtime target resources:');
-        for (const target of context.runtimeCompatibility.targets) {
-            printLine(`  ${target.label} [${target.id}] ${target.state} ${target.archivePath} -> ${target.runtimePath}`);
-        }
-        printLine('');
-        printLine('Compatibility inspection completed without launching Codex.');
-        return 0;
     }
     if (isPublicLaunchCommand(command)) {
         return await runRuntimeLaunchCommand();

@@ -7,6 +7,7 @@ Use it when you need a quick answer to "what does this repo actually enable?" be
 ## Delivery Modes
 
 - `launch` is the public runtime path. It starts Codex with a local CDP endpoint and applies the supported target patches in memory for that launched session only.
+- Windows `inspect` is the public read-only compatibility path. `inspect --json` emits one schema-versioned JSON report on success or expected failure without launching Codex or inspecting provider configuration.
 - Runtime launch does not modify `app.asar`, `Info.plist`, the app bundle, or the app signature.
 - Legacy bundle patch commands and internal file-patch/restore flows have been removed.
 - If a user previously installed the launchd auto-repair watcher, `launch` removes the legacy watcher files before starting Codex.

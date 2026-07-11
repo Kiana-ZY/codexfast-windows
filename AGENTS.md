@@ -19,6 +19,7 @@ Repository guidance for `codexfast`.
 - Read [`docs/real-app-validation.md`](./docs/real-app-validation.md) when claiming real installed-app compatibility.
 - Read [`docs/version-adaptation-playbook.md`](./docs/version-adaptation-playbook.md) when adapting to a new `Codex.app` build.
 - Read [`docs/release-process.md`](./docs/release-process.md) when preparing a version bump, release commit, or package publish.
+- Use [`.agents/skills/codexfast-windows-update-audit/SKILL.md`](./.agents/skills/codexfast-windows-update-audit/SKILL.md) for a strictly read-only Windows update audit before starting an adaptation.
 - Read the relevant file under [`docs/bundle-notes/`](./docs/bundle-notes/) when adapting to a Codex bundle or investigating a gate/signature change.
 - Keep `docs/` focused on reusable conclusions. Do not store raw conversation transcripts or throwaway debugging logs there.
 
@@ -35,6 +36,7 @@ Repository guidance for `codexfast`.
 ## Validation
 
 - Run `pnpm build:check`, `pnpm typecheck`, and `pnpm test` after changing runtime launch, patch targets, watcher cleanup, command dispatch, or generated CLI logic.
+- Keep `inspect --json` machine-readable: stdout must contain one JSON document on success or expected failure, with no launch or provider-inspection claims.
 - If package metadata changes, also check `package.json` and `bin/codexfast`.
 - Do not claim macOS app behavior is fixed unless the regression test passes and the real-world limitation is stated clearly.
 - Update the relevant files under `docs/` when compatibility knowledge, bundle notes, or release process knowledge changes.

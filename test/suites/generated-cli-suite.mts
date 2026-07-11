@@ -47,6 +47,10 @@ export function runGeneratedCliSuite(rootDir: string): void {
   assertContains(generatedCli, "expectedTarget.runtimePath", "expected generated CLI to bind observed targets to discovered runtime paths");
   assertContains(generatedCli, "expectedTarget.contentSha256", "expected generated CLI to bind observed targets to inspected response hashes");
   assertContains(generatedCli, "Inspect Windows compatibility without launching Codex", "expected generated CLI to expose the read-only inspect command");
+  assertContains(generatedCli, 'schemaVersion: 1', "expected generated CLI to include the inspect JSON schema");
+  assertContains(generatedCli, 'WINDOWS_RUNTIME_COMPATIBILITY_FAILED', "expected generated CLI to report structured compatibility failures");
+  assertContains(generatedCli, 'providerConfigurationInspected: false', "expected generated CLI not to claim provider inspection");
+  assertNotContains(generatedCli, 'from "./cli-inspect.mts"', "expected generated CLI to inline the inspect module");
   assertNotContains(generatedCli, "general-settings-Dtfq14Yt.js", "expected generated CLI not to hard-code version-specific Windows chunk names");
   assertNotContains(generatedCli, "runtimePatchInitialResourcePathsByWindowsVersion", "expected generated CLI not to use a static Windows version-to-resource table");
   assertContains(generatedCli, "runtimePatchPreloadMaxAttempts = 3", "expected generated CLI to retry transient preload execution-context failures");

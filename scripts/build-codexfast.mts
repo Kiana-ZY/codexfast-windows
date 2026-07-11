@@ -15,7 +15,7 @@ const compilerOptions = {
   module: ts.ModuleKind.CommonJS,
   target: ts.ScriptTarget.ES2022,
 };
-const cliModulePattern = String.raw`\.\/cli-(?:app-environment|asar|cdp|command-policy|context|output|platform-macos|platform-windows|runtime-launch|runtime-patcher|runtime-platform|runtime-profile|update-settings|utils|watcher|windows-compatibility)\.mts`;
+const cliModulePattern = String.raw`\.\/cli-(?:app-environment|asar|cdp|command-policy|context|inspect|output|platform-macos|platform-windows|runtime-launch|runtime-patcher|runtime-platform|runtime-profile|update-settings|utils|watcher|windows-compatibility)\.mts`;
 
 function inlineLocalModuleSource(source: string): string {
   return source.replace(/^export /gm, "");
@@ -75,6 +75,7 @@ const cliModuleSource = [
   "cli-cdp.mts",
   "cli-command-policy.mts",
   "cli-context.mts",
+  "cli-inspect.mts",
   "cli-output.mts",
   "cli-platform-macos.mts",
   "cli-platform-windows.mts",

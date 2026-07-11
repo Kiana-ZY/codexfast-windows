@@ -29,6 +29,7 @@ function runWindowsCommand(
   command: string,
   args: string[],
   cwd: string,
+  environment: NodeJS.ProcessEnv = process.env,
 ) {
   const commandLine = [command, ...args].map(quoteCmdArgument).join(" ");
   return spawnSync(process.env.ComSpec ?? "cmd.exe", [
@@ -39,6 +40,7 @@ function runWindowsCommand(
   ], {
     cwd,
     encoding: "utf8",
+    env: environment,
   });
 }
 
@@ -81,6 +83,45 @@ try {
   ) {
     throw new Error(
       `Generated codexfast.cmd failed: ${version.stderr || version.stdout}`,
+    );
+  }
+
+  const missingBundle = join(
+    testDir,
+    "Program Files",
+    "WindowsApps",
+    "OpenAI.Codex_26.707.3748.0_x64__codexfastshimtest",
+  );
+  const inspect = runWindowsCommand(
+    shim,
+    ["inspect", "--json"],
+    testDir,
+    {
+      ...process.env,
+      CODEXFAST_APP_BUNDLE: missingBundle,
+      CODEXFAST_APP_EXECUTABLE: "app\\ChatGPT.exe",
+      CODEXFAST_APP_USER_MODEL_ID: "OpenAI.Codex_codexfastshimtest!App",
+    },
+  );
+  if (inspect.status !== 1 || inspect.stderr) {
+    throw new Error(
+      `Generated codexfast.cmd inspect failure path was not clean: ${inspect.stderr || inspect.stdout}`,
+    );
+  }
+  let inspectReport: { ok?: boolean; error?: { code?: string } };
+  try {
+    inspectReport = JSON.parse(inspect.stdout);
+  } catch (error) {
+    throw new Error(
+      `Generated codexfast.cmd did not preserve inspect --json arguments: ${String(error)}\n${inspect.stdout}`,
+    );
+  }
+  if (
+    inspectReport.ok !== false ||
+    inspectReport.error?.code !== "WINDOWS_APP_DISCOVERY_FAILED"
+  ) {
+    throw new Error(
+      `Generated codexfast.cmd returned an unexpected inspect report: ${inspect.stdout}`,
     );
   }
   console.log(`Windows npm shim check passed: codexfast ${packageVersion}`);

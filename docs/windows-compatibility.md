@@ -52,6 +52,14 @@ Run the authoritative read-only inspection without starting Codex:
 node .\bin\codexfast inspect
 ```
 
+For a machine-readable audit, use:
+
+```powershell
+node .\bin\codexfast inspect --json
+```
+
+The JSON v1 contract returns one stdout document and a non-zero exit on failure. It records package identity, override selection, manifest/ASAR/`AppxSignature.p7x` file snapshots, compatibility source, dynamic resource paths, and all eight original/patched target hashes. It does not claim cryptographic signature validation, runtime CDP observation, UI behavior, or provider-route verification.
+
 The development wrapper below delegates to the same generated CLI gate:
 
 ```powershell

@@ -54,6 +54,8 @@ corepack pnpm test:windows
 
 ```powershell
 node .\bin\codexfast version
+node .\bin\codexfast inspect
+node .\bin\codexfast inspect --json
 node .\bin\codexfast launch
 ```
 
@@ -130,6 +132,14 @@ node .\bin\codexfast inspect
 ```
 
 它会重新读取当前 MSIX 身份、manifest、`AppxSignature.p7x` 和 `app.asar`，输出兼容来源、ASAR SHA-256、8 个目标的 archive/runtime 路径与状态。每次 `launch` 都会重新执行检查，不保存长期信任缓存；启动后仍必须从对应 renderer origin、资源路径和原始/已补丁 body hash 观察全部 8 个目标。
+
+自动化和版本审计可使用：
+
+```powershell
+node .\bin\codexfast inspect --json
+```
+
+JSON `schemaVersion` 当前为 `1`。成功和预期失败都会在 stdout 输出单个 JSON 文档，失败仍使用非零退出码。报告包含包身份、覆盖项是否启用、manifest/ASAR/`AppxSignature.p7x` 文件快照、兼容来源和 8 个目标；它明确标记未启动 Codex、未执行 runtime 验证、未读取 Provider 配置。`ok: true` 只表示静态门禁通过，不代表 UI、Fast request 或 `http://127.0.0.1:8317/v1` 已经真实验证。
 
 ## Fail-Closed 行为
 

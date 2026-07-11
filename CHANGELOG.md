@@ -10,6 +10,8 @@ This project follows a simple release-oriented changelog format.
 
 - Added the complete Windows Fast feature set for the signature-validated `OpenAI.Codex` / `OpenAI.CodexBeta` `26.707.3748.0` runtime profile, including Settings Fast, `/fast`, the Intelligence Speed menu, custom-provider service-tier allowance, request propagation, and conversation fallback alongside GPT-5.6 Sol/Terra/Luna.
 - Added read-only `codexfast inspect` and signature-gated Windows update adaptation. Unlisted official current-user packages can proceed only when package identity is exact and all eight allowed ASAR targets are globally unique, replacement-verifiable, and dynamically mapped to renderer resources.
+- Added `codexfast inspect --json` with a stable v1 success/failure report for package identity, file snapshots, compatibility source, resource mappings, and all eight target hashes without launching Codex or inspecting Provider configuration.
+- Added a project-owned `codexfast-windows-update-audit` Skill for strictly read-only post-update audits, and aligned the project Skills with the GitHub-only distribution policy.
 
 ### Fixed
 

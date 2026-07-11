@@ -8,7 +8,7 @@ Run these checks after any meaningful bundle change, runtime patch-signature upd
 
 Use these checks when validating `launch` behavior. Do not mark a build as real-app validated from regression tests alone.
 
-- `npx codexfast launch` starts Codex when Codex is not already running
+- `node ./bin/codexfast launch` starts Codex when Codex is not already running
 - The launched session opens with runtime patches active
 - The launch output reports the required initial target labels for the current build before it reports `Runtime launch completed`; older builds include `Plugins access`, while `26.601.21317`, `26.602.30954`, `26.602.40724`, `26.602.71036`, `26.608.12217`, `26.609.30741`, `26.609.41114`, `26.609.71450`, `26.611.61049`, `26.611.61753`, `26.611.62324`, `26.616.31447`, `26.616.51431`, `26.616.71553`, `26.616.81150`, `26.623.31443`, `26.623.31921`, `26.623.42026`, `26.623.61825`, `26.623.70822`, `26.623.81905`, `26.623.101652`, and `26.623.141536` do not require that legacy target because the old sidebar/page/detail gates are absent or Plugins is supported by the official app path
 - The `codexfast launch` process remains running while the launched Codex session is open
@@ -25,7 +25,7 @@ Use these checks when validating `launch` behavior. Do not mark a build as real-
 ### Windows MSIX
 
 - Fully quit the Codex Desktop process tree under the selected WindowsApps/MSIX directory before launch; unrelated Codex CLI processes may remain running
-- Before quitting the active session, run `node .\bin\codexfast inspect` and record the PackageFullName, compatibility source, ASAR hash, and eight target mappings. `signature-compatible update` is acceptable for testing but is not yet a support claim
+- Before quitting the active session, run `node .\bin\codexfast inspect --json` and record the PackageFullName, compatibility source, three file snapshots, and eight target mappings. `signature-compatible update` is acceptable for testing but is not yet a support claim
 - Run `node .\bin\codexfast launch` without administrator privileges
 - Confirm the action header prints the MSIX version, Package Family Name, Application Id, AUMID, executable, app.asar, and all eight required Fast/model target labels
 - Confirm launch reports `Speed setting`, `Speed service tier allowance`, `Speed service tier request allowance`, `Speed service tier conversation fallback`, `Composer Intelligence Speed menu`, `Fast slash command`, `GPT-5.x model list`, and `GPT-5.6 model query selector` before `Runtime launch completed`
