@@ -9,11 +9,11 @@ Source: `src/supported-windows-app-versions.mts`.
 | Package identity | AppxManifest version | Runtime profile |
 | --- | --- | --- |
 | `OpenAI.Codex` | `26.707.3748.0` | GPT-5.6 models plus the complete Fast feature set, with mandatory observation of all eight required labels |
-| `OpenAI.CodexBeta` | `26.707.3748.0` | Same signature-gated model and Fast profile; package not directly installed during this adaptation |
+| `OpenAI.CodexBeta` | `26.707.3748.0` | Same runtime-target-pattern-gated model and Fast profile; package not directly installed during this adaptation |
 
 A matching version does not complete compatibility verification. Launch remains blocked unless intercepted JavaScript actually reports all six Fast labels plus `GPT-5.x model list` and `GPT-5.6 model query selector`.
 
-An unlisted version can enter `signature-compatible update` without adding a wildcard version entry. This requires an exact current-user registration for the official Stable or Beta PackageFullName, the expected OpenAI Publisher, manifest/PFN/AUMID/executable agreement, stable manifest/ASAR/signature snapshots, and exactly one allowed guarded/patched/legacy signature for each of the eight target IDs across the full archive. Every guarded/legacy replacement is verified in memory and rechecked for idempotency. The status is intentionally weaker than a matrix support claim.
+An unlisted registered version can receive classification `unlisted-signature-compatible` without adding a wildcard version entry. This requires an exact current-user registration for the official Stable or Beta PackageFullName, the expected OpenAI Publisher, manifest/PFN/AUMID/executable agreement, stable manifest/ASAR/`AppxSignature.p7x` file snapshots, and exactly one allowed guarded/patched/legacy target pattern for each of the eight target IDs across the full archive. Every guarded/legacy replacement is verified in memory and rechecked for idempotency. The classification is intentionally weaker than a matrix support claim.
 
 ## Installed Package Record
 
@@ -33,17 +33,19 @@ Inspection date: `2026-07-10`.
 
 - app.asar size: `199246396`
 - app.asar SHA-256: `8569b806651ba64c7a0d2fb2e072d4616f37dfe9a057be6ec829b6fa1c193b10`
+- AppxManifest.xml size: `3711`
+- AppxManifest.xml SHA-256: `faeb5337747668c2e2d091e75e6711e5e6d66e2c1b4fcf76c7b8a87c12aa8f42`
 - AppxSignature.p7x size: `12210`
 - AppxSignature.p7x SHA-256: `4F6FFC2F2F4396BADD9F8F14F341B52F33B115107EBA3127DE0F05D852321786`
-- `Speed setting`: guarded signature in `webview/assets/general-settings-Dtfq14Yt.js`
-- `Speed service tier allowance`: guarded signature in `webview/assets/use-service-tier-settings-uyaJ6nX6.js`
-- `Speed service tier request allowance`: guarded signature in `webview/assets/read-service-tier-for-request-D2fynmwS.js`
-- `Speed service tier conversation fallback`: guarded signature in `webview/assets/use-service-tier-settings-uyaJ6nX6.js`
-- `Composer Intelligence Speed menu`: guarded signature in `webview/assets/composer-Bt9Tt576.js`
-- `Fast slash command`: guarded signature in `webview/assets/composer-Bt9Tt576.js`
-- `GPT-5.x model list`: guarded signature in `webview/assets/app-main-BEs0GGm0.js`
-- `GPT-5.6 model query selector`: guarded signature in `webview/assets/model-queries-DYpQPsG6.js`
-- All eight guarded matches were patched in memory and re-recognized by their patched signatures.
+- `Speed setting`: guarded target pattern in `webview/assets/general-settings-Dtfq14Yt.js`
+- `Speed service tier allowance`: guarded target pattern in `webview/assets/use-service-tier-settings-uyaJ6nX6.js`
+- `Speed service tier request allowance`: guarded target pattern in `webview/assets/read-service-tier-for-request-D2fynmwS.js`
+- `Speed service tier conversation fallback`: guarded target pattern in `webview/assets/use-service-tier-settings-uyaJ6nX6.js`
+- `Composer Intelligence Speed menu`: guarded target pattern in `webview/assets/composer-Bt9Tt576.js`
+- `Fast slash command`: guarded target pattern in `webview/assets/composer-Bt9Tt576.js`
+- `GPT-5.x model list`: guarded target pattern in `webview/assets/app-main-BEs0GGm0.js`
+- `GPT-5.6 model query selector`: guarded target pattern in `webview/assets/model-queries-DYpQPsG6.js`
+- All eight guarded matches were patched in memory and re-recognized by their patched target patterns.
 - Before/after size, modification time, and SHA-256 were unchanged.
 
 Run the authoritative read-only inspection without starting Codex:
@@ -58,7 +60,7 @@ For a machine-readable audit, use:
 node .\bin\codexfast inspect --json
 ```
 
-The JSON v1 contract returns one stdout document and a non-zero exit on failure. It records package identity, override selection, manifest/ASAR/`AppxSignature.p7x` file snapshots, compatibility source, dynamic resource paths, and all eight original/patched target hashes. It does not claim cryptographic signature validation, runtime CDP observation, UI behavior, or provider-route verification.
+The JSON v1 contract returns one stdout document and a non-zero exit on failure. It records package identity, override selection, manifest/ASAR/`AppxSignature.p7x` file snapshots, compatibility source, dynamic resource paths, and all eight original/patched target hashes. `compatibility.verifiedTargetCount` is the number of targets that passed this static archive/replacement gate, not a runtime observation count. The report does not claim cryptographic signature validation, runtime CDP observation, UI behavior, or provider-route verification.
 
 The development wrapper below delegates to the same generated CLI gate:
 
@@ -105,8 +107,8 @@ Completed:
 - fail-closed termination tests for missing targets and CDP disconnect
 - non-activating tray launcher and temporary shortcut self-tests
 - generated single-file CLI build and Windows npm shim check
-- read-only installed app.asar signature inspection
-- compatible unlisted Stable/Beta synthetic ASARs, all eight missing-target cases, same-file and cross-file ambiguity, signature-only duplicates, malformed ASARs, and manifest/ASAR/signature TOCTOU failures
+- read-only installed app.asar runtime-target inspection
+- compatible unlisted Stable/Beta synthetic ASARs, all eight missing-target cases, same-file and cross-file ambiguity, target-pattern-only duplicates, malformed ASARs, and manifest/ASAR/`AppxSignature.p7x` file-snapshot TOCTOU failures
 - CDP renderer-origin/resource-path/body-hash binding, empty waiting-renderer transition coverage, non-app renderer rejection, per-reconnect required-label observation, reconnect setup failure propagation, and loopback/port WebSocket restrictions
 
 Pending:
@@ -116,4 +118,4 @@ Pending:
 - Existing-conversation and stop/edit/resend Fast fallback verification
 - Confirmation in local proxy logs that requests continue through `http://127.0.0.1:8317/v1` with the selected model id and `service_tier: "priority"` for Fast
 
-Those checks are intentionally manual because closing or restarting the active Codex instance would terminate the current development session.
+Those checks are intentionally manual because automated validation does not activate, close, or restart the user's installed Codex instance.

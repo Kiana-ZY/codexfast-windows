@@ -527,6 +527,7 @@ export function loadWindowsAppEnvironment(
   context: CodexfastContext,
   supportedWindowsAppVersions: Record<string, string>,
   runner: WindowsCommandRunner = run,
+  environment: NodeJS.ProcessEnv = process.env,
 ): void {
   const powershell = resolveWindowsPowerShell();
   if (!powershell) {
@@ -536,7 +537,7 @@ export function loadWindowsAppEnvironment(
   }
   context.toolchain.powershell = powershell;
 
-  const configuredBundle = process.env.CODEXFAST_APP_BUNDLE?.trim() ||
+  const configuredBundle = environment.CODEXFAST_APP_BUNDLE?.trim() ||
     context.paths.bundle.trim();
   let packageCandidate: WindowsPackageCandidate | null = null;
   let bundle = configuredBundle;
@@ -612,13 +613,13 @@ export function loadWindowsAppEnvironment(
     packageCandidate,
     parsedPackagePath,
   );
-  const configuredAumid = process.env.CODEXFAST_APP_USER_MODEL_ID?.trim() ?? "";
+  const configuredAumid = environment.CODEXFAST_APP_USER_MODEL_ID?.trim() ?? "";
   if (configuredAumid && !/^[^!]+![^!]+$/u.test(configuredAumid)) {
     throw new Error(
       "CODEXFAST_APP_USER_MODEL_ID must use the PackageFamilyName!ApplicationId form.",
     );
   }
-  const configuredExecutable = process.env.CODEXFAST_APP_EXECUTABLE;
+  const configuredExecutable = environment.CODEXFAST_APP_EXECUTABLE;
   const application = selectManifestApplication(
     manifest,
     configuredExecutable,

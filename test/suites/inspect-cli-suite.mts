@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createPackage } from "@electron/asar";
 import {
   mkdirSync,
   mkdtempSync,
@@ -12,13 +11,54 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { finished } from "node:stream/promises";
+import type { InspectReport } from "../../src/cli-inspect.mts";
+import { createFinishedAsar } from "../helpers/create-finished-asar.mts";
 
 type FileSnapshot = {
   sha256: string;
   size: number;
   mtimeMs: number;
 };
+
+const inspectReportKeys = [
+  "schemaVersion",
+  "ok",
+  "command",
+  "tool",
+  "platform",
+  "scope",
+  "selection",
+  "package",
+  "paths",
+  "compatibility",
+  "snapshots",
+  "resourcePaths",
+  "targets",
+  "error",
+] as const;
+
+const expectedTargets = [
+  ["speed-setting-destructured-option-count", "Speed setting", "windows-fast-targets.js"],
+  ["speed-service-tier-allowance-26601", "Speed service tier allowance", "windows-fast-targets.js"],
+  ["speed-service-tier-request-allowance-26707", "Speed service tier request allowance", "windows-fast-targets.js"],
+  ["speed-service-tier-conversation-fallback-26707", "Speed service tier conversation fallback", "windows-fast-targets.js"],
+  ["intelligence-speed-menu-options-boolean-code", "Composer Intelligence Speed menu", "windows-fast-targets.js"],
+  ["service-tier-slash-command", "Fast slash command", "windows-fast-targets.js"],
+  ["gpt5x-model-list-options", "GPT-5.x model list", "windows-model-targets.js"],
+  ["gpt56-model-query-selector", "GPT-5.6 model query selector", "windows-model-targets.js"],
+] as const;
+
+function assertExactKeys(
+  value: object,
+  expected: readonly string[],
+  label: string,
+): void {
+  assert.deepEqual(
+    Object.keys(value).sort(),
+    [...expected].sort(),
+    `${label} keys changed without a schema-version update`,
+  );
+}
 
 function snapshot(path: string): FileSnapshot {
   const stat = statSync(path);
@@ -95,8 +135,7 @@ async function createFakeInspectPackage(
     );
   }
   const appAsar = join(resources, "app.asar");
-  const stream = await createPackage(asarSource, appAsar);
-  await finished(stream);
+  await createFinishedAsar(asarSource, appAsar);
   return {
     bundle,
     appAsar,
@@ -110,8 +149,8 @@ async function createFakeInspectPackage(
   };
 }
 
-function parseReport(stdout: string): Record<string, any> {
-  return JSON.parse(stdout) as Record<string, any>;
+function parseReport(stdout: string): InspectReport {
+  return JSON.parse(stdout) as InspectReport;
 }
 
 export async function runInspectCliSuite(rootDir: string): Promise<void> {
@@ -123,9 +162,26 @@ export async function runInspectCliSuite(rootDir: string): Promise<void> {
   assert.equal(invalid.status, 1, invalid.stderr || invalid.stdout);
   assert.equal(invalid.stderr, "");
   const invalidReport = parseReport(invalid.stdout);
+  assertExactKeys(invalidReport, inspectReportKeys, "invalid report");
   assert.equal(invalidReport.ok, false);
   assert.equal(invalidReport.error.code, "INVALID_ARGUMENTS");
   assert.equal(invalidReport.error.stage, "arguments");
+
+  const duplicateJson = runGeneratedCli(
+    rootDir,
+    ["inspect", "--json", "--json"],
+    inspectEnvironment(),
+  );
+  assert.equal(
+    duplicateJson.status,
+    1,
+    duplicateJson.stderr || duplicateJson.stdout,
+  );
+  assert.equal(duplicateJson.stderr, "");
+  const duplicateJsonReport = parseReport(duplicateJson.stdout);
+  assert.equal(duplicateJsonReport.ok, false);
+  assert.equal(duplicateJsonReport.error.code, "INVALID_ARGUMENTS");
+  assert.match(duplicateJsonReport.error.message, /at most once/);
 
   if (process.platform !== "win32") {
     const unsupported = runGeneratedCli(
@@ -144,6 +200,32 @@ export async function runInspectCliSuite(rootDir: string): Promise<void> {
 
   const tempRoot = mkdtempSync(join(tmpdir(), "codexfast-inspect-cli-"));
   try {
+    const missing = runGeneratedCli(
+      rootDir,
+      ["inspect", "--json"],
+      inspectEnvironment({
+        CODEXFAST_APP_BUNDLE: join(
+          tempRoot,
+          "Program Files",
+          "WindowsApps",
+          "OpenAI.Codex_26.707.3748.0_x64__codexfastmissing",
+        ),
+        CODEXFAST_APP_EXECUTABLE: "app\\ChatGPT.exe",
+        CODEXFAST_APP_USER_MODEL_ID: "OpenAI.Codex_codexfastmissing!App",
+      }),
+    );
+    assert.equal(missing.status, 1, missing.stderr || missing.stdout);
+    assert.equal(missing.stderr, "");
+    const missingReport = parseReport(missing.stdout);
+    assertExactKeys(missingReport, inspectReportKeys, "discovery failure report");
+    assert.equal(missingReport.ok, false);
+    assert.equal(missingReport.error.code, "WINDOWS_APP_DISCOVERY_FAILED");
+    assert.equal(missingReport.error.stage, "discovery");
+    assert.equal(missingReport.compatibility, null);
+    assert.equal(missingReport.snapshots, null);
+    assert.deepEqual(missingReport.resourcePaths, []);
+    assert.deepEqual(missingReport.targets, []);
+
     const compatible = await createFakeInspectPackage(
       rootDir,
       tempRoot,
@@ -163,35 +245,124 @@ export async function runInspectCliSuite(rootDir: string): Promise<void> {
     assert.equal(success.status, 0, success.stderr || success.stdout);
     assert.equal(success.stderr, "");
     const report = parseReport(success.stdout);
+    assertExactKeys(report, inspectReportKeys, "success report");
     assert.equal(report.schemaVersion, 1);
     assert.equal(report.ok, true);
+    assert.equal(report.command, "inspect");
+    assert.equal(report.tool.name, "codexfast-windows");
+    assert.ok(report.tool.version.length > 0);
     assert.equal(report.platform, "win32");
-    assert.equal(report.scope.readOnly, true);
-    assert.equal(report.scope.codexLaunched, false);
-    assert.equal(report.scope.runtimeVerificationPerformed, false);
-    assert.equal(report.scope.providerConfigurationInspected, false);
+    assert.deepEqual(report.scope, {
+      readOnly: true,
+      codexLaunched: false,
+      runtimeVerificationPerformed: false,
+      providerConfigurationInspected: false,
+    });
+    assert.deepEqual(report.selection, {
+      overrides: {
+        bundle: true,
+        executable: true,
+        appUserModelId: true,
+      },
+    });
+    assert.ok(report.package);
+    assertExactKeys(report.package, [
+      "name",
+      "packageFullName",
+      "version",
+      "versionKey",
+      "publisher",
+      "packageFamilyName",
+      "applicationId",
+      "appUserModelId",
+      "registrationVerified",
+      "registeredInstallLocations",
+    ], "package report");
     assert.equal(report.package.name, "OpenAI.Codex");
+    assert.equal(
+      report.package.packageFullName,
+      "OpenAI.Codex_26.707.3748.0_x64__codexfasttest",
+    );
     assert.equal(report.package.version, "26.707.3748.0");
+    assert.equal(
+      report.package.versionKey,
+      "OpenAI.Codex+26.707.3748.0",
+    );
+    assert.equal(
+      report.package.publisher,
+      "CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B",
+    );
     assert.equal(report.package.packageFamilyName, "OpenAI.Codex_codexfasttest");
+    assert.equal(report.package.applicationId, "App");
     assert.equal(
       report.package.appUserModelId,
       "OpenAI.Codex_codexfasttest!App",
     );
+    assert.equal(report.package.registrationVerified, false);
+    assert.ok(Array.isArray(report.package.registeredInstallLocations));
+    assert.ok(report.paths);
+    assert.deepEqual(report.paths, {
+      bundle: compatible.bundle,
+      resources: join(compatible.bundle, "app", "resources"),
+      appxManifest: compatible.appxManifest,
+      executable: join(compatible.bundle, "app", "ChatGPT.exe"),
+      appAsar: compatible.appAsar,
+    });
     assert.equal(report.compatibility.source, "whitelist-signatures");
     assert.equal(report.compatibility.classification, "recorded-static-pass");
+    assert.match(
+      report.compatibility.description,
+      /runtime target patterns statically verified/,
+    );
+    assert.doesNotMatch(
+      report.compatibility.description,
+      /signatures verified/,
+    );
     assert.equal(report.compatibility.staticGatePassed, true);
     assert.equal(report.compatibility.runtimeVerificationRequired, true);
     assert.equal(report.compatibility.requiredTargetCount, 8);
     assert.equal(report.compatibility.verifiedTargetCount, 8);
+    assert.ok(report.snapshots);
+    assert.deepEqual(report.snapshots, {
+      appxManifest: {
+        path: compatible.appxManifest,
+        ...compatibleSnapshots.manifest,
+      },
+      appAsar: {
+        path: compatible.appAsar,
+        ...compatibleSnapshots.asar,
+      },
+      appxSignatureFile: {
+        path: compatible.appxSignature,
+        ...compatibleSnapshots.signature,
+      },
+    });
+    assert.deepEqual(report.resourcePaths, [
+      "assets/windows-fast-targets.js",
+      "assets/windows-model-targets.js",
+    ]);
     assert.equal(report.targets.length, 8);
     assert.equal(new Set(report.targets.map((target: any) => target.id)).size, 8);
-    for (const target of report.targets) {
-      assert.ok(target.label);
-      assert.ok(target.archivePath);
-      assert.ok(target.runtimePath);
+    for (const [index, target] of report.targets.entries()) {
+      const [id, label, resource] = expectedTargets[index];
+      assertExactKeys(target, [
+        "id",
+        "label",
+        "state",
+        "archivePath",
+        "runtimePath",
+        "contentSha256",
+        "patchedContentSha256",
+      ], `target ${id}`);
+      assert.equal(target.id, id);
+      assert.equal(target.label, label);
+      assert.equal(target.state, "guarded");
+      assert.equal(target.archivePath, `webview/assets/${resource}`);
+      assert.equal(target.runtimePath, `assets/${resource}`);
       assert.match(target.contentSha256, /^[0-9a-f]{64}$/);
       assert.match(target.patchedContentSha256, /^[0-9a-f]{64}$/);
     }
+    assert.equal(report.error, null);
     assert.deepEqual(
       {
         manifest: snapshot(compatible.appxManifest),
@@ -233,6 +404,7 @@ export async function runInspectCliSuite(rootDir: string): Promise<void> {
     assert.equal(failure.status, 1, failure.stderr || failure.stdout);
     assert.equal(failure.stderr, "");
     const failureReport = parseReport(failure.stdout);
+    assertExactKeys(failureReport, inspectReportKeys, "compatibility failure report");
     assert.equal(failureReport.ok, false);
     assert.equal(
       failureReport.error.code,
@@ -240,6 +412,10 @@ export async function runInspectCliSuite(rootDir: string): Promise<void> {
     );
     assert.equal(failureReport.error.stage, "compatibility");
     assert.match(failureReport.error.message, /GPT-5\.x model list/);
+    assert.equal(failureReport.compatibility, null);
+    assert.equal(failureReport.snapshots, null);
+    assert.deepEqual(failureReport.resourcePaths, []);
+    assert.ok(failureReport.package);
     assert.equal(failureReport.package.name, "OpenAI.Codex");
     assert.equal(failureReport.targets.length, 0);
     assert.deepEqual(

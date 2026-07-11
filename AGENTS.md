@@ -18,7 +18,7 @@ Repository guidance for `codexfast`.
 - Read [`docs/troubleshooting.md`](./docs/troubleshooting.md) when the app fails to launch, a UI path breaks, `Plugins` remains partially unavailable, or repeated patch runs behave unexpectedly.
 - Read [`docs/real-app-validation.md`](./docs/real-app-validation.md) when claiming real installed-app compatibility.
 - Read [`docs/version-adaptation-playbook.md`](./docs/version-adaptation-playbook.md) when adapting to a new `Codex.app` build.
-- Read [`docs/release-process.md`](./docs/release-process.md) when preparing a version bump, release commit, or package publish.
+- Read [`docs/release-process.md`](./docs/release-process.md) when preparing a version bump, release commit, tag, or GitHub source release.
 - Use [`.agents/skills/codexfast-windows-update-audit/SKILL.md`](./.agents/skills/codexfast-windows-update-audit/SKILL.md) for a strictly read-only Windows update audit before starting an adaptation.
 - Read the relevant file under [`docs/bundle-notes/`](./docs/bundle-notes/) when adapting to a Codex bundle or investigating a gate/signature change.
 - Keep `docs/` focused on reusable conclusions. Do not store raw conversation transcripts or throwaway debugging logs there.
@@ -95,6 +95,7 @@ Use this checklist for every future Codex bundle adaptation or patch-signature u
 
 ## Safety
 
-- Public `launch` should not modify a locally installed `/Applications/Codex.app`.
+- Public `launch` must not modify a locally installed `/Applications/Codex.app` or Windows Codex MSIX, including `app.asar`, `Info.plist`, `AppxManifest.xml`, package files, or signatures.
+- Do not edit `.codex/config.toml`, `model_provider`, or Provider base URLs as part of launch, inspect, compatibility adaptation, or recovery.
 - Do not reintroduce hidden app-bundle mutation paths. The hidden `repair` command is only a cleanup shim for old watcher files.
 - Prefer surgical diffs. Avoid unrelated refactors in the embedded Node patcher unless they directly support the requested fix.

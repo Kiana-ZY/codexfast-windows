@@ -25,7 +25,7 @@ Use these checks when validating `launch` behavior. Do not mark a build as real-
 ### Windows MSIX
 
 - Fully quit the Codex Desktop process tree under the selected WindowsApps/MSIX directory before launch; unrelated Codex CLI processes may remain running
-- Before quitting the active session, run `node .\bin\codexfast inspect --json` and record the PackageFullName, compatibility source, three file snapshots, and eight target mappings. `signature-compatible update` is acceptable for testing but is not yet a support claim
+- Before quitting the active session, run `node .\bin\codexfast inspect --json` and record the PackageFullName, compatibility source/classification, three file snapshots, and eight target mappings. `unlisted-signature-compatible` is acceptable for testing but is not yet a support claim
 - Run `node .\bin\codexfast launch` without administrator privileges
 - Confirm the action header prints the MSIX version, Package Family Name, Application Id, AUMID, executable, app.asar, and all eight required Fast/model target labels
 - Confirm launch reports `Speed setting`, `Speed service tier allowance`, `Speed service tier request allowance`, `Speed service tier conversation fallback`, `Composer Intelligence Speed menu`, `Fast slash command`, `GPT-5.x model list`, and `GPT-5.6 model query selector` before `Runtime launch completed`

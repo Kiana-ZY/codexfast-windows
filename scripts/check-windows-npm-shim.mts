@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,13 +17,22 @@ if (process.platform !== "win32") {
 }
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const npmCli = join(
+  dirname(process.execPath),
+  "node_modules",
+  "npm",
+  "bin",
+  "npm-cli.js",
+);
 const packageVersion = JSON.parse(
   readFileSync(join(rootDir, "package.json"), "utf8"),
 ).version as string;
 const testDir = mkdtempSync(join(tmpdir(), "codexfast-npm-shim-"));
+const sourceRoot = mkdtempSync(join(tmpdir(), "codexfast-npm-source-"));
+const sourceLink = join(sourceRoot, "codexfast-&-source");
 
-function quoteCmdArgument(value: string): string {
-  return /[\s"]/u.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
+function quotePowerShellLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 function runWindowsCommand(
@@ -31,12 +41,15 @@ function runWindowsCommand(
   cwd: string,
   environment: NodeJS.ProcessEnv = process.env,
 ) {
-  const commandLine = [command, ...args].map(quoteCmdArgument).join(" ");
-  return spawnSync(process.env.ComSpec ?? "cmd.exe", [
-    "/d",
-    "/s",
-    "/c",
-    commandLine,
+  const commandLine = [command, ...args]
+    .map(quotePowerShellLiteral)
+    .join(" ");
+  return spawnSync("powershell.exe", [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    `& ${commandLine}; exit $LASTEXITCODE`,
   ], {
     cwd,
     encoding: "utf8",
@@ -45,21 +58,30 @@ function runWindowsCommand(
 }
 
 try {
+  if (!existsSync(npmCli)) {
+    throw new Error(`npm CLI was not found next to Node.js: ${npmCli}`);
+  }
+  symlinkSync(rootDir, sourceLink, "junction");
   writeFileSync(
     join(testDir, "package.json"),
     JSON.stringify({ private: true }, null, 2),
   );
-  const install = runWindowsCommand(
-    "npm.cmd",
+  const install = spawnSync(
+    process.execPath,
     [
+      npmCli,
       "install",
       "--ignore-scripts",
       "--no-package-lock",
       "--no-audit",
       "--no-fund",
-      rootDir,
+      sourceLink,
     ],
-    testDir,
+    {
+      cwd: testDir,
+      encoding: "utf8",
+      env: process.env,
+    },
   );
   if (install.status !== 0) {
     throw new Error(
@@ -127,4 +149,5 @@ try {
   console.log(`Windows npm shim check passed: codexfast ${packageVersion}`);
 } finally {
   rmSync(testDir, { recursive: true, force: true });
+  rmSync(sourceRoot, { recursive: true, force: true });
 }

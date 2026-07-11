@@ -311,8 +311,8 @@ export function applyWindowsRuntimeCompatibility(
   context.runtimeCompatibility = profile;
   context.metadata.supported = true;
   context.metadata.compatibility = knownVersionDescription
-    ? `supported (${knownVersionDescription}); read-only runtime signatures verified; runtime target verification required`
-    : "signature-compatible update (unlisted version); all required read-only runtime signatures verified; runtime target verification required";
+    ? `supported (${knownVersionDescription}); runtime target patterns statically verified; runtime target verification required`
+    : "unlisted registered update; all required runtime target patterns statically verified; runtime target verification required";
 }
 
 export function verifyWindowsRuntimeCompatibilitySnapshot(

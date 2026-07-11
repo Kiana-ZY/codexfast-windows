@@ -9,7 +9,7 @@ description: Use when iterating on codexfast features, bundle-patch signatures, 
 
 Use this skill for day-to-day `codexfast` feature work.
 
-This repo is high risk because it launches and can test runtime patches against a real `/Applications/Codex.app` bundle. Public `launch` must leave the app bundle untouched. Legacy bundle mutation, file-patch, archive rewrite, re-sign, and restore flows have been removed.
+This repo is high risk because it launches and can test runtime patches against a real `/Applications/Codex.app` bundle or signed Windows Codex MSIX. Public `launch` must leave the installed app untouched. Legacy bundle mutation, file-patch, archive rewrite, re-sign, and restore flows have been removed.
 
 ## When To Use
 
@@ -26,7 +26,8 @@ For a strictly read-only Windows update check, use `codexfast-windows-update-aud
 
 - Keep the generated CLI self-contained.
 - Edit `src/*` as the source of truth, then run `pnpm build` to regenerate `bin/codexfast`.
-- Preserve the runtime-only launcher. Do not reintroduce bundle unpack/repack, archive rewrite, persistent `Contents/Resources/app`, local `codesign`, or restore paths.
+- Preserve the runtime-only launcher. Do not reintroduce bundle/MSIX unpack-repack, archive rewrite, persistent `Contents/Resources/app`, local signing, manifest replacement, or restore paths.
+- Do not edit `.codex/config.toml`, `model_provider`, Provider base URLs, or credentials as part of launch or compatibility adaptation.
 - Treat patch-signature and runtime interception changes as one unit.
 - Do not add new public watcher commands. Current `launch` removes legacy auto-repair watcher files installed by older releases.
 - Do not claim app behavior is fixed from code inspection alone. The regression suite must pass.
@@ -78,7 +79,7 @@ For a strictly read-only Windows update check, use `codexfast-windows-update-aud
    - Run `pnpm test`. For a narrow Windows compatibility change, run `pnpm test:windows` before the full suite.
    - If package metadata changed, also inspect `package.json` and `bin/codexfast`.
    - If packaging or docs changed materially, run `pnpm pack --dry-run`.
-   - For runtime launch changes, run a real installed-app `launch` pass when possible, then confirm `app.asar`, `Info.plist`, and the app signature are unchanged.
+   - For runtime launch changes, run a real installed-app `launch` pass when possible. Confirm `app.asar`, `Info.plist`, and the macOS signature remain unchanged; on Windows also confirm `AppxManifest.xml`, MSIX files, the package signature, `config.toml`, and Provider routing remain unchanged.
 
 ## Codexfast-Specific Checklist
 

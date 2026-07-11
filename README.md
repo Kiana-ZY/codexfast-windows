@@ -5,7 +5,7 @@
 
 > Independent public adaptation based on [`Veath/codexfast`](https://github.com/Veath/codexfast) `v0.49.1`, with Windows support maintained by [`Kiana-ZY`](https://github.com/Kiana-ZY). This is not an official OpenAI project. See [`UPSTREAM.md`](./UPSTREAM.md).
 
-**A runtime launcher for verified macOS and signature-validated Windows OpenAI Codex Desktop builds that applies session-only UI patches without modifying the installed app bundle or MSIX.**
+**A runtime launcher for verified macOS and statically target-checked Windows OpenAI Codex Desktop builds that applies session-only UI patches without modifying the installed app bundle or MSIX.**
 
 `codexfast` launches Codex with temporary runtime patches for the current session. It keeps the original `app.asar`, `Info.plist`, app bundle, and app signature untouched.
 
@@ -36,7 +36,7 @@ Windows setup, MSIX overrides, fail-closed behavior, manual validation, and roll
 
 Verified for `ChatGPT.app` / `Codex.app` `26.707.31428` (`build 5059`), `26.623.141536` (`build 4753`), `26.623.101652` (`build 4674`), `26.623.81905` (`build 4598`), `26.623.70822` (`build 4559`), `26.623.61825` (`build 4548`), `26.623.42026` (`build 4514`), `26.623.31921` (`build 4452`), `26.623.31443` (`build 4441`), `26.616.81150` (`build 4306`), `26.616.71553` (`build 4265`), `26.616.51431` (`build 4212`), `26.616.31447` (`build 4133`), `26.611.62324` (`build 4028`), `26.611.61753` (`build 4008`), `26.611.61049` (`build 3996`), `26.609.71450` (`build 3965`), `26.609.41114` (`build 3888`), `26.609.30741` (`build 3808`), `26.608.12217` (`build 3722`), `26.602.71036` (`build 3685`), `26.602.40724` (`build 3593`), `26.602.30954` (`build 3575`), `26.601.21317` (`build 3511`), `26.527.60818` (`build 3437`), `26.527.31326` (`build 3390`), `26.519.81530` (`build 3178`), `26.519.41501` (`build 3044`), `26.519.31651` (`build 3017`), `26.519.22136` (`build 3003`), `26.513.31313` (`build 2867`), `26.513.20950` (`build 2816`), `26.506.31421` (`build 2620`), `26.506.21252` (`build 2575`), `26.429.61741` (`build 2429`), `26.429.30905` (`build 2345`), `26.429.20946` (`build 2312`), `26.422.71525` (`build 2210`), `26.422.62136` (`builds 2180, 2176`), `26.422.30944` (`build 2080`), `26.422.21637` (`build 2056`), `26.417.41555` (`build 1858`), and `26.415.40636` (`build 1799`). Feature scope: [`docs/feature-scope.md`](./docs/feature-scope.md).
 
-The Windows model and Fast profile has read-only signature validation for `OpenAI.Codex` MSIX `26.707.3748.0`. A newer unlisted Windows package may enter the narrower `signature-compatible update` state only when its current-user registration and package identity match and all eight allowed target signatures are globally unique and verifiable in `app.asar`; that state is not a real-app support claim. A real end-to-end Windows launch remains a manual validation step because this task must not close or restart the active Codex session.
+The Windows model and Fast profile has a recorded read-only runtime-target static pass for `OpenAI.Codex` MSIX `26.707.3748.0`. A newer unlisted Windows package may enter the narrower `unlisted-signature-compatible` classification only when its current-user registration and package identity match and all eight allowed target patterns are globally unique and verifiable in `app.asar`; that classification is not a real-app support claim. Automated validation intentionally does not activate or stop the installed Codex app, so real launch, UI, Fast request, and provider-route checks remain a separate manual workflow.
 
 ## How It Works
 
@@ -97,7 +97,7 @@ q) Quit
 The script matches code signatures in frontend build output, so it can break after a Codex update.
 
 - macOS `launch` is blocked unless the installed version/build is whitelisted
-- Windows rechecks the registered MSIX identity, manifest, signature file, and the eight exact ASAR target signatures on every run. Unlisted builds proceed only as `signature-compatible update`; no long-term trust cache or version wildcard is used
+- Windows rechecks the registered MSIX identity, manifest, `AppxSignature.p7x` file snapshot, and the eight exact ASAR target patterns on every run. Unlisted registered builds proceed only with source `signature-compatible-update` and classification `unlisted-signature-compatible`; no long-term trust cache or version wildcard is used
 - Windows additionally fails closed unless all six Fast targets and both model targets are observed from the expected renderer origin, resource path, and inspected body hash before the response is released
 - Runtime launch does not rewrite `app.asar`, `Info.plist`, the app bundle, backups, the app signature, or macOS privacy permissions
 - On macOS only, the automatic-update switch disables later background update checks and forced automatic install scheduling during the current `codexfast launch` session; Windows does not enable updater patches

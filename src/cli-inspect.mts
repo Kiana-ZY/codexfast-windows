@@ -15,9 +15,56 @@ export type InspectError = {
   message: string;
 };
 
-export type InspectReport = {
+type InspectFileSnapshot = {
+  path: string;
+  sha256: string;
+  size: number;
+  mtimeMs: number;
+};
+
+type InspectPackage = {
+  name: string;
+  packageFullName: string;
+  version: string;
+  versionKey: string;
+  publisher: string;
+  packageFamilyName: string;
+  applicationId: string;
+  appUserModelId: string;
+  registrationVerified: boolean;
+  registeredInstallLocations: string[];
+};
+
+type InspectPaths = {
+  bundle: string;
+  resources: string;
+  appxManifest: string;
+  executable: string;
+  appAsar: string;
+};
+
+type InspectCompatibility = {
+  source: "whitelist-signatures" | "signature-compatible-update";
+  classification: "recorded-static-pass" | "unlisted-signature-compatible";
+  description: string;
+  staticGatePassed: true;
+  runtimeVerificationRequired: true;
+  requiredTargetCount: number;
+  verifiedTargetCount: number;
+};
+
+type InspectTarget = {
+  id: string;
+  label: string;
+  state: "guarded" | "patched" | "legacy-patched";
+  archivePath: string;
+  runtimePath: string;
+  contentSha256: string;
+  patchedContentSha256: string;
+};
+
+type InspectReportBase = {
   schemaVersion: 1;
-  ok: boolean;
   command: "inspect";
   tool: {
     name: "codexfast-windows";
@@ -37,58 +84,33 @@ export type InspectReport = {
       appUserModelId: boolean;
     };
   };
-  package: null | {
-    name: string;
-    packageFullName: string;
-    version: string;
-    versionKey: string;
-    publisher: string;
-    packageFamilyName: string;
-    applicationId: string;
-    appUserModelId: string;
-    registrationVerified: boolean;
-    registeredInstallLocations: string[];
-  };
-  paths: null | {
-    bundle: string;
-    resources: string;
-    appxManifest: string;
-    executable: string;
-    appAsar: string;
-  };
-  compatibility: null | {
-    source: "whitelist-signatures" | "signature-compatible-update";
-    classification: "recorded-static-pass" | "unlisted-signature-compatible";
-    description: string;
-    staticGatePassed: true;
-    runtimeVerificationRequired: true;
-    requiredTargetCount: number;
-    verifiedTargetCount: number;
-  };
-  snapshots: null | {
+  package: InspectPackage | null;
+  paths: InspectPaths | null;
+};
+
+export type InspectSuccessReport = InspectReportBase & {
+  ok: true;
+  compatibility: InspectCompatibility;
+  snapshots: {
     appxManifest: InspectFileSnapshot;
     appAsar: InspectFileSnapshot;
     appxSignatureFile: InspectFileSnapshot;
   };
   resourcePaths: string[];
-  targets: Array<{
-    id: string;
-    label: string;
-    state: "guarded" | "patched" | "legacy-patched";
-    archivePath: string;
-    runtimePath: string;
-    contentSha256: string;
-    patchedContentSha256: string;
-  }>;
-  error: InspectError | null;
+  targets: InspectTarget[];
+  error: null;
 };
 
-type InspectFileSnapshot = {
-  path: string;
-  sha256: string;
-  size: number;
-  mtimeMs: number;
+export type InspectFailureReport = InspectReportBase & {
+  ok: false;
+  compatibility: null;
+  snapshots: null;
+  resourcePaths: string[];
+  targets: InspectTarget[];
+  error: InspectError;
 };
+
+export type InspectReport = InspectSuccessReport | InspectFailureReport;
 
 type ParsedInspectArguments = {
   json: boolean;
@@ -126,7 +148,7 @@ export function parseInspectArguments(args: string[]): ParsedInspectArguments {
   return { json: jsonCount === 1, error: null };
 }
 
-function inspectScope(): InspectReport["scope"] {
+function inspectScope(): InspectReportBase["scope"] {
   return {
     readOnly: true,
     codexLaunched: false,
@@ -137,7 +159,7 @@ function inspectScope(): InspectReport["scope"] {
 
 function inspectSelection(
   environment: NodeJS.ProcessEnv,
-): InspectReport["selection"] {
+): InspectReportBase["selection"] {
   return {
     overrides: {
       bundle: Boolean(environment.CODEXFAST_APP_BUNDLE?.trim()),
@@ -151,7 +173,7 @@ function inspectSelection(
 
 function inspectPackage(
   context: CodexfastContext,
-): InspectReport["package"] {
+): InspectReportBase["package"] {
   if (!context.metadata.packageName) {
     return null;
   }
@@ -171,7 +193,7 @@ function inspectPackage(
   };
 }
 
-function inspectPaths(context: CodexfastContext): InspectReport["paths"] {
+function inspectPaths(context: CodexfastContext): InspectReportBase["paths"] {
   if (!context.paths.bundle) {
     return null;
   }
@@ -188,10 +210,7 @@ function baseInspectReport(
   context: CodexfastContext,
   packageVersion: string,
   environment: NodeJS.ProcessEnv,
-): Omit<
-  InspectReport,
-  "ok" | "compatibility" | "snapshots" | "resourcePaths" | "targets" | "error"
-> {
+): InspectReportBase {
   return {
     schemaVersion: 1,
     command: "inspect",
@@ -212,7 +231,7 @@ export function createInspectFailureReport(
   packageVersion: string,
   environment: NodeJS.ProcessEnv,
   error: InspectError,
-): InspectReport {
+): InspectFailureReport {
   return {
     ...baseInspectReport(context, packageVersion, environment),
     ok: false,
@@ -228,7 +247,7 @@ export function createInspectSuccessReport(
   context: CodexfastContext,
   packageVersion: string,
   environment: NodeJS.ProcessEnv,
-): InspectReport {
+): InspectSuccessReport {
   const profile = context.runtimeCompatibility;
   if (
     profile.source !== "whitelist-signatures" &&
@@ -337,6 +356,8 @@ export function runInspectCommand(options: RunInspectCommandOptions): number {
     loadEnvironment(
       options.context,
       options.supportedWindowsAppVersions,
+      undefined,
+      environment,
     );
   } catch (caught) {
     const error: InspectError = {

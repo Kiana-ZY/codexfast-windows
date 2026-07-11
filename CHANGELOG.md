@@ -8,7 +8,7 @@ This project follows a simple release-oriented changelog format.
 
 ### Added
 
-- Added the complete Windows Fast feature set for the signature-validated `OpenAI.Codex` / `OpenAI.CodexBeta` `26.707.3748.0` runtime profile, including Settings Fast, `/fast`, the Intelligence Speed menu, custom-provider service-tier allowance, request propagation, and conversation fallback alongside GPT-5.6 Sol/Terra/Luna.
+- Added the complete Windows Fast feature set for the recorded `OpenAI.Codex` `26.707.3748.0` runtime-target profile, including Settings Fast, `/fast`, the Intelligence Speed menu, custom-provider service-tier allowance, request propagation, and conversation fallback alongside GPT-5.6 Sol/Terra/Luna. `OpenAI.CodexBeta` shares the conditional profile but was not directly installed during validation.
 - Added read-only `codexfast inspect` and signature-gated Windows update adaptation. Unlisted official current-user packages can proceed only when package identity is exact and all eight allowed ASAR targets are globally unique, replacement-verifiable, and dynamically mapped to renderer resources.
 - Added `codexfast inspect --json` with a stable v1 success/failure report for package identity, file snapshots, compatibility source, resource mappings, and all eight target hashes without launching Codex or inspecting Provider configuration.
 - Added a project-owned `codexfast-windows-update-audit` Skill for strictly read-only post-update audits, and aligned the project Skills with the GitHub-only distribution policy.
@@ -20,6 +20,8 @@ This project follows a simple release-oriented changelog format.
 - Accepted Electron's empty-URL waiting renderer target during startup, enabled interception before releasing it, and bound it to the first valid `app://` response without weakening non-app or cross-origin fail-closed checks.
 - Required every CDP reconnect to rebind an app renderer and re-observe all eight Windows targets, delayed lazy-resource preload until the pending renderer reaches an app origin, and verified the activation PID's exact random CDP command line before claiming ownership.
 - Moved Windows identity revalidation and `taskkill /PID /T /F` into one held-handle helper, while documenting the narrow non-atomic PID boundary inherent to the required taskkill interface.
+- Kept injected `inspect` override reporting and actual MSIX selection on the same environment, and hardened the Windows npm shim check for local repository paths containing shell metacharacters.
+- Centralized ASAR fixture completion, expanded the schema v1 regression contract, and added a Windows CI lane for the declared Node.js `18.12.0` minimum without repeating the shim installation check.
 
 ## [0.49.1] - 2026-07-10
 

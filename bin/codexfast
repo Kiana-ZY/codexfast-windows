@@ -1143,7 +1143,7 @@ function runInspectCommand(options) {
     }
     const loadEnvironment = options.loadEnvironment ?? loadWindowsAppEnvironment;
     try {
-        loadEnvironment(options.context, options.supportedWindowsAppVersions);
+        loadEnvironment(options.context, options.supportedWindowsAppVersions, undefined, environment);
     }
     catch (caught) {
         const error = {
@@ -1599,13 +1599,13 @@ function validateWindowsPackageIdentity(bundle, manifest, packageCandidate, pars
         throw new Error(`MSIX registration identity ${packageCandidate.packageFullName} / ${packageCandidate.packageFamilyName} does not match WindowsApps path identity ${parsedPackagePath.packageDirectoryName} / ${parsedPackagePath.packageFamilyName}.`);
     }
 }
-function loadWindowsAppEnvironment(context, supportedWindowsAppVersions, runner = run) {
+function loadWindowsAppEnvironment(context, supportedWindowsAppVersions, runner = run, environment = process.env) {
     const powershell = resolveWindowsPowerShell();
     if (!powershell) {
         throw new Error("Windows PowerShell was not found. codexfast does not request administrator privileges; install/restore Windows PowerShell or set the Windows app overrides after it is available.");
     }
     context.toolchain.powershell = powershell;
-    const configuredBundle = process.env.CODEXFAST_APP_BUNDLE?.trim() ||
+    const configuredBundle = environment.CODEXFAST_APP_BUNDLE?.trim() ||
         context.paths.bundle.trim();
     let packageCandidate = null;
     let bundle = configuredBundle;
@@ -1659,11 +1659,11 @@ function loadWindowsAppEnvironment(context, supportedWindowsAppVersions, runner 
     }
     const parsedPackagePath = parseWindowsAppsPackagePath(bundle);
     validateWindowsPackageIdentity(bundle, manifest, packageCandidate, parsedPackagePath);
-    const configuredAumid = process.env.CODEXFAST_APP_USER_MODEL_ID?.trim() ?? "";
+    const configuredAumid = environment.CODEXFAST_APP_USER_MODEL_ID?.trim() ?? "";
     if (configuredAumid && !/^[^!]+![^!]+$/u.test(configuredAumid)) {
         throw new Error("CODEXFAST_APP_USER_MODEL_ID must use the PackageFamilyName!ApplicationId form.");
     }
-    const configuredExecutable = process.env.CODEXFAST_APP_EXECUTABLE;
+    const configuredExecutable = environment.CODEXFAST_APP_EXECUTABLE;
     const application = selectManifestApplication(manifest, configuredExecutable, applicationIdFromAumid(configuredAumid));
     const executable = executablePathForWindowsApp(bundle, application.executable, configuredExecutable);
     const resources = (0, node_path_1.join)((0, node_path_2.dirname)(executable), "resources");
@@ -3751,8 +3751,8 @@ function applyWindowsRuntimeCompatibility(context, patcherSource, supportedWindo
     context.runtimeCompatibility = profile;
     context.metadata.supported = true;
     context.metadata.compatibility = knownVersionDescription
-        ? `supported (${knownVersionDescription}); read-only runtime signatures verified; runtime target verification required`
-        : "signature-compatible update (unlisted version); all required read-only runtime signatures verified; runtime target verification required";
+        ? `supported (${knownVersionDescription}); runtime target patterns statically verified; runtime target verification required`
+        : "unlisted registered update; all required runtime target patterns statically verified; runtime target verification required";
 }
 function verifyWindowsRuntimeCompatibilitySnapshot(context) {
     const profile = context.runtimeCompatibility;

@@ -42,7 +42,8 @@ export function runGeneratedCliSuite(rootDir: string): void {
   assertContains(generatedCli, "Fast slash command", "expected generated CLI to require the Windows Fast slash-command label");
   assertContains(generatedCli, "class ReadOnlyAsarArchive", "expected generated CLI to include the self-contained read-only ASAR reader");
   assertContains(generatedCli, "inspectRuntimePatchCompatibility", "expected generated CLI to inspect Windows target signatures dynamically");
-  assertContains(generatedCli, "signature-compatible update", "expected generated CLI to distinguish compatible unlisted Windows updates");
+  assertContains(generatedCli, "signature-compatible-update", "expected generated CLI to preserve the unlisted Windows compatibility source");
+  assertContains(generatedCli, "unlisted registered update", "expected generated CLI to describe unlisted compatibility without implying cryptographic signature validation");
   assertContains(generatedCli, "Could not determine one renderer root", "expected generated CLI to derive runtime resource paths from the inspected ASAR");
   assertContains(generatedCli, "expectedTarget.runtimePath", "expected generated CLI to bind observed targets to discovered runtime paths");
   assertContains(generatedCli, "expectedTarget.contentSha256", "expected generated CLI to bind observed targets to inspected response hashes");

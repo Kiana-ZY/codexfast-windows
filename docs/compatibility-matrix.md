@@ -64,14 +64,14 @@ This file tracks verified `Codex.app` builds for `codexfast`.
 
 | Platform | Package | MSIX version | Status | Features | Verified | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| Windows | `OpenAI.Codex` | `26.707.3748.0` | `signature-verified` | GPT-5.6 Sol/Terra/Luna, Settings Fast, `/fast`, Intelligence Speed menu, and complete Fast service-tier propagation | `2026-07-10` | AppxManifest, AUMID generation, process lifecycle tests, generated CLI, Fast/model fixtures, and all eight read-only app.asar target signatures are verified. Real UI launch and `service_tier: "priority"` proxy-log validation remain intentionally pending because the active Codex session must not be closed in this task. |
+| Windows | `OpenAI.Codex` | `26.707.3748.0` | `recorded-static-pass` | GPT-5.6 Sol/Terra/Luna, Settings Fast, `/fast`, Intelligence Speed menu, and complete Fast service-tier propagation | `2026-07-10` | AppxManifest identity, AUMID generation, process lifecycle tests, generated CLI, Fast/model fixtures, and all eight read-only app.asar target patterns passed. `AppxSignature.p7x` is recorded as a file snapshot, not cryptographically validated. Real UI launch and `service_tier: "priority"` proxy-log validation remain intentionally pending as a separate manual workflow. |
 | Windows | `OpenAI.CodexBeta` | `26.707.3748.0` | `conditional` | Same model and Fast profile when all eight runtime labels match | `2026-07-10` | Discovery and version key are supported, but this package identity was not installed locally. Runtime target observation remains mandatory and fail-closed. |
 
-Unlisted Windows versions are not added to this matrix automatically. A current-user registered official package may run as `signature-compatible update` when package identity, manifest/signature snapshots, all eight globally unique ASAR signatures, replacement verification, and the CDP origin/path/body-hash gate succeed. That runtime state remains unverified until the manual real-app checklist passes and a row is added here.
+Unlisted Windows versions are not added to this matrix automatically. A current-user registered official package may report `compatibility.source: "signature-compatible-update"` and `compatibility.classification: "unlisted-signature-compatible"` when package identity, manifest/signature snapshots, all eight globally unique ASAR target patterns, replacement verification, and the CDP origin/path/body-hash gate succeed. That state remains unverified until the manual real-app checklist passes and a row is added here.
 
 ## Update Rules
 
 - Add a row only after direct bundle inspection and regression updates.
 - For macOS, if a build is not whitelisted yet, mark it `investigating` or `unsupported`.
-- For Windows, do not convert `signature-compatible update` into `signature-verified` or `supported` until real UI and request-path validation is complete.
+- For Windows, do not convert `unlisted-signature-compatible` or `recorded-static-pass` into `supported` until real UI and request-path validation is complete.
 - When support status changes, update this file and the relevant platform version table.

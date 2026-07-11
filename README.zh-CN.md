@@ -29,7 +29,7 @@ node ./bin/codexfast launch
 
 已验证支持 `ChatGPT.app` / `Codex.app` `26.707.31428`（`build 5059`）、`26.623.141536`（`build 4753`）、`26.623.101652`（`build 4674`）、`26.623.81905`（`build 4598`）、`26.623.70822`（`build 4559`）、`26.623.61825`（`build 4548`）、`26.623.42026`（`build 4514`）、`26.623.31921`（`build 4452`）、`26.623.31443`（`build 4441`）、`26.616.81150`（`build 4306`）、`26.616.71553`（`build 4265`）、`26.616.51431`（`build 4212`）、`26.616.31447`（`build 4133`）、`26.611.62324`（`build 4028`）、`26.611.61753`（`build 4008`）、`26.611.61049`（`build 3996`）、`26.609.71450`（`build 3965`）、`26.609.41114`（`build 3888`）、`26.609.30741`（`build 3808`）、`26.608.12217`（`build 3722`）、`26.602.71036`（`build 3685`）、`26.602.40724`（`build 3593`）、`26.602.30954`（`build 3575`）、`26.601.21317`（`build 3511`）、`26.527.60818`（`build 3437`）、`26.527.31326`（`build 3390`）、`26.519.81530`（`build 3178`）、`26.519.41501`（`build 3044`）、`26.519.31651`（`build 3017`）、`26.519.22136`（`build 3003`）、`26.513.31313`（`build 2867`）、`26.513.20950`（`build 2816`）、`26.506.31421`（`build 2620`）、`26.506.21252`（`build 2575`）、`26.429.61741`（`build 2429`）、`26.429.30905`（`build 2345`）、`26.429.20946`（`build 2312`）、`26.422.71525`（`build 2210`）、`26.422.62136`（`builds 2180, 2176`）、`26.422.30944`（`build 2080`）、`26.422.21637`（`build 2056`）、`26.417.41555`（`build 1858`）和 `26.415.40636`（`build 1799`）。功能范围见 [`docs/feature-scope.md`](./docs/feature-scope.md)。
 
-Windows 模型与 Fast profile 已对 `OpenAI.Codex` MSIX `26.707.3748.0` 完成 8 个目标的只读签名检查。更新后的未登记 Windows 包只有在当前用户注册身份与包身份一致、8 个允许目标在整个 `app.asar` 中各自唯一且替换可复核时，才会进入更窄的 `signature-compatible update` 状态；这不等于真实应用支持声明。本任务不能关闭或重启当前 Codex，因此真实 Windows 启动仍保留为最终手动验证步骤。
+Windows 模型与 Fast profile 已对 `OpenAI.Codex` MSIX `26.707.3748.0` 完成 8 个 runtime target pattern 的只读静态检查。更新后、尚未列入版本记录但已完成当前用户注册的 Windows 包，只有在注册身份与包身份一致、8 个允许目标在整个 `app.asar` 中各自唯一且替换可复核时，才会进入更窄的 `unlisted-signature-compatible` classification；这不等于真实应用支持声明。自动验证有意不激活或终止已安装的 Codex，真实 launch、UI、Fast 请求和 Provider 路由验证应在独立的手工会话中完成。
 
 ## 工作方式
 
@@ -90,7 +90,7 @@ q) Quit
 脚本匹配的是 Codex 前端构建产物里的代码签名，所以 Codex 更新后可能失效。
 
 - macOS `launch` 只允许在白名单里的 version/build 上执行
-- Windows 每次运行都会重新核验当前用户 MSIX 注册、manifest、签名文件和 8 个精确 ASAR 目标；未登记版本只能以 `signature-compatible update` 状态继续，不使用版本通配或长期信任缓存
+- Windows 每次运行都会重新核验当前用户 MSIX 注册、manifest、`AppxSignature.p7x` 文件快照和 8 个精确 ASAR target pattern；未列入版本记录但已注册的版本只能以 `unlisted-signature-compatible` classification 继续，不使用版本通配或长期信任缓存
 - Windows 还要求从预期 renderer origin、资源路径和已检查 body hash 观察全部 6 个 Fast 目标与 2 个模型目标，否则 fail closed
 - Runtime launch 不会改写 `app.asar`、`Info.plist`、app bundle、备份、app 签名或 macOS 隐私权限
 - 仅 macOS profile 提供自动更新开关；Windows 不启用 updater 补丁

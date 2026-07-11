@@ -12,7 +12,7 @@
 - Executable: `app\ChatGPT.exe`
 - Frontend archive: `app\resources\app.asar`
 
-`26.707.3748.0` 是已记录的 Windows 基线。更新后的未登记版本不会仅因版本号不同而自动失败：只有当前用户注册的官方 `OpenAI.Codex` / `OpenAI.CodexBeta` 包、manifest/PFN/AUMID/executable 身份完全一致，并且下列 8 个签名在整个 `app.asar` 中各自唯一、替换后可复核时，才会被标记为 `signature-compatible update`。这个状态只表示静态签名兼容，不等于已经完成真实 UI 和请求验证。
+`26.707.3748.0` 是已记录的 Windows 基线。更新后、尚未列入版本记录的版本不会仅因版本号不同而自动失败：只有当前用户注册的官方 `OpenAI.Codex` / `OpenAI.CodexBeta` 包、manifest/PFN/AUMID/executable 身份完全一致，并且下列 8 个 runtime target pattern 在整个 `app.asar` 中各自唯一、替换后可复核时，才会得到 `unlisted-signature-compatible` classification。这个状态只表示静态 target 兼容，不等于已经完成真实 UI 和请求验证。
 
 Windows profile 只启用以下 runtime targets：
 
@@ -109,7 +109,7 @@ logs\launcher.previous.log
 --remote-debugging-address=127.0.0.1
 ```
 
-Stable 始终确定性优先。若已选择的 Stable 包签名不兼容，启动器不会静默改为启动 Beta；需要通过 `CODEXFAST_APP_BUNDLE` 明确选择 Beta。未登记版本必须精确匹配当前用户注册的 `PackageFullName`，单独设置覆盖项不能为未知包建立信任。Publisher、AUMID 的 PFN 和 manifest executable 也必须与所选包一致。
+Stable 始终确定性优先。若已选择的 Stable 包 runtime target pattern 不兼容，启动器不会静默改为启动 Beta；需要通过 `CODEXFAST_APP_BUNDLE` 明确选择 Beta。尚未列入版本记录但已完成当前用户注册的版本必须精确匹配注册的 `PackageFullName`，单独设置覆盖项不能为未知包建立信任。Publisher、AUMID 的 PFN 和 manifest executable 也必须与所选包一致。
 
 如果当前普通用户环境无法发现 MSIX，启动器会输出错误，不会静默提权。可显式配置：
 
@@ -139,11 +139,11 @@ node .\bin\codexfast inspect
 node .\bin\codexfast inspect --json
 ```
 
-JSON `schemaVersion` 当前为 `1`。成功和预期失败都会在 stdout 输出单个 JSON 文档，失败仍使用非零退出码。报告包含包身份、覆盖项是否启用、manifest/ASAR/`AppxSignature.p7x` 文件快照、兼容来源和 8 个目标；它明确标记未启动 Codex、未执行 runtime 验证、未读取 Provider 配置。`ok: true` 只表示静态门禁通过，不代表 UI、Fast request 或 `http://127.0.0.1:8317/v1` 已经真实验证。
+JSON `schemaVersion` 当前为 `1`。成功和预期失败都会在 stdout 输出单个 JSON 文档，失败仍使用非零退出码。报告包含包身份、覆盖项是否启用、manifest/ASAR/`AppxSignature.p7x` 文件快照、兼容来源和 8 个目标；`compatibility.verifiedTargetCount` 只统计通过静态归档/替换门禁的目标，不表示 runtime CDP 已观察到这些目标。报告明确标记未启动 Codex、未执行 runtime 验证、未读取 Provider 配置。`ok: true` 只表示静态门禁通过，不代表 UI、Fast request 或 `http://127.0.0.1:8317/v1` 已经真实验证。
 
 ## Fail-Closed 行为
 
-已登记版本使用 `whitelist-signatures`，未登记但通过全部静态门禁的版本使用 `signature-compatible update`。两者在激活前都必须完成只读全归档检查；Windows 启动成功前还必须从真实 CDP Fetch response 中观察到：
+已登记版本使用 source `whitelist-signatures`，未列入版本记录但通过全部静态门禁的已注册版本使用 source `signature-compatible-update` 和 classification `unlisted-signature-compatible`。两者在激活前都必须完成只读全归档检查；Windows 启动成功前还必须从真实 CDP Fetch response 中观察到：
 
 ```text
 Speed setting
@@ -183,7 +183,7 @@ Windows launcher 不会直接写入或替换：
 
 ## 手动验证
 
-本仓库的自动测试不会启动或关闭真实 Codex。完成本任务后，在已完全退出 Codex 的独立终端中运行：
+本仓库的自动测试不会启动或关闭真实 Codex。需要执行真实验证时，在已完全退出 Codex 的独立终端中运行：
 
 ```powershell
 cd C:\path\to\codexfast-clone
@@ -232,7 +232,7 @@ Remove-Item Env:CODEXFAST_APP_USER_MODEL_ID -ErrorAction SilentlyContinue
 
 ## 更新兼容性
 
-Codex 更新后，启动器会动态发现新的 hashed chunk 名；只要官方注册身份稳定、8 个签名仍各自唯一且内存替换可复核，就可以进入 `signature-compatible update` 状态。签名变化、目标缺失/重复、manifest 或签名文件变化、CDP origin/path/hash 不一致都会 fail closed。先运行 `node .\bin\codexfast inspect`；即使通过，也仍需按上面的手动清单验证 UI、Fast 请求和 `http://127.0.0.1:8317/v1` 路由，完成后才能把该版本记录为真实支持。
+Codex 更新后，启动器会动态发现新的 hashed chunk 名；只要官方当前用户注册身份稳定、8 个 target pattern 仍各自唯一且内存替换可复核，就可以进入 `unlisted-signature-compatible` classification。target pattern 变化、目标缺失/重复、manifest 或 `AppxSignature.p7x` 文件快照变化、CDP origin/path/hash 不一致都会 fail closed。先运行 `node .\bin\codexfast inspect`；即使通过，也仍需按上面的手动清单验证 UI、Fast 请求和 `http://127.0.0.1:8317/v1` 路由，完成后才能把该版本记录为真实支持。
 
 ## License
 

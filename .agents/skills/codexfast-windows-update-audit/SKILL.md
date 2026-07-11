@@ -1,6 +1,6 @@
 ---
 name: codexfast-windows-update-audit
-description: Perform a strictly read-only compatibility audit of an installed Windows OpenAI Codex or CodexBeta MSIX against the codexfast-windows repository. Use after Codex updates, when `codexfast inspect` blocks or reports a signature-compatible update, or when package identity and runtime-target evidence is needed before adapting or recording a Windows build. Never launch, activate, patch, repair, reinstall, re-sign, or edit Codex, the repository, user configuration, or provider settings.
+description: Perform a strictly read-only compatibility audit of an installed Windows OpenAI Codex or CodexBeta MSIX against the codexfast-windows repository. Use after Codex updates, when `codexfast inspect` blocks or reports an unlisted-signature-compatible classification, or when package identity and runtime-target evidence is needed before adapting or recording a Windows build. Never launch, activate, patch, repair, reinstall, re-sign, or edit Codex, the repository, user configuration, or provider settings.
 ---
 
 # CodexFast Windows Update Audit
@@ -42,16 +42,17 @@ The JSON report must have `schemaVersion: 1`. Parse it as structured data; do no
 4. Verify the report contract:
 
 - `scope.readOnly` is `true`.
-- `scope.codexLaunched`, `runtimeVerificationPerformed`, and `providerConfigurationInspected` are `false`.
+- `scope.codexLaunched`, `scope.runtimeVerificationPerformed`, and `scope.providerConfigurationInspected` are `false`.
 - Package identity, PackageFullName, Publisher, PFN, Application Id, AUMID, executable, and registration status are explicit.
 - Manifest, ASAR, and `AppxSignature.p7x` are described as file snapshots with path, SHA-256, size, and mtime. Do not call the signature cryptographically verified.
 - A successful report contains exactly eight verified targets, each with id, label, state, archive path, runtime path, original body hash, and patched body hash.
-- `runtimeVerificationRequired` remains `true` for every static pass.
+- `compatibility.verifiedTargetCount` counts targets that passed the static archive/replacement gate; it is not a runtime CDP observation count.
+- `compatibility.runtimeVerificationRequired` remains `true` for every static pass.
 
 5. Classify the result:
 
-- `recorded-static-pass`: `ok: true` and source `whitelist-signatures`.
-- `unlisted-signature-compatible`: `ok: true` and source `signature-compatible-update`.
+- `recorded-static-pass`: `ok: true`, `compatibility.classification: "recorded-static-pass"`, and `compatibility.source: "whitelist-signatures"`.
+- `unlisted-signature-compatible`: `ok: true`, `compatibility.classification: "unlisted-signature-compatible"`, and `compatibility.source: "signature-compatible-update"`.
 - `blocked`: a discovery or compatibility error caused by package identity, manifest, ASAR, signature-file snapshot, or target mismatch.
 - `tooling-error`: the generated CLI or required local tool cannot run.
 

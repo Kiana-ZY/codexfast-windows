@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createPackage } from "@electron/asar";
 import {
   mkdirSync,
   mkdtempSync,
@@ -11,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { finished } from "node:stream/promises";
+import { createFinishedAsar } from "../helpers/create-finished-asar.mts";
 import { CdpConnection } from "../../src/cli-cdp.mts";
 import { ReadOnlyAsarArchive } from "../../src/cli-asar.mts";
 import { createCodexfastContext } from "../../src/cli-context.mts";
@@ -268,9 +267,7 @@ async function createAdaptiveAsar(
     writeFileSync(join(assets, resource), bodies.join(" "), "utf8");
   }
   const appAsar = join(bundle, "app", "resources", "app.asar");
-  rmSync(appAsar, { force: true });
-  const stream = await createPackage(source, appAsar);
-  await finished(stream);
+  await createFinishedAsar(source, appAsar);
   return appAsar;
 }
 
@@ -2029,6 +2026,30 @@ function testWindowsEnvironmentOverrides(manifestXml: string): void {
     assert.equal(context.metadata.supported, true);
     assert.equal(context.metadata.packageRegistrationVerified, false);
     assert.match(context.metadata.compatibility, /explicit AUMID override/);
+
+    const injectedContext = createCodexfastContext("", "win32");
+    withWindowsAppOverridesCleared(() =>
+      loadWindowsAppEnvironment(
+        injectedContext,
+        {
+          "OpenAI.Codex+26.707.3748.0": "test-supported",
+        },
+        () => commandResult(0, "[]"),
+        {
+          ...process.env,
+          CODEXFAST_APP_BUNDLE: bundle,
+          CODEXFAST_APP_EXECUTABLE: join("app", "ChatGPT.exe"),
+          CODEXFAST_APP_USER_MODEL_ID:
+            "OpenAI.Codex_2p2nqsd0c76g0!App",
+        },
+      )
+    );
+    assert.equal(injectedContext.paths.bundle, bundle);
+    assert.equal(injectedContext.paths.executable, executable);
+    assert.equal(
+      injectedContext.metadata.appUserModelId,
+      "OpenAI.Codex_2p2nqsd0c76g0!App",
+    );
 
     const outsideExecutable = join(root, "ChatGPT.exe");
     writeFileSync(outsideExecutable, "outside executable", "utf8");
