@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a reproducible launcher, patch, build, or documentation defect.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Do not upload `app.asar`, MSIX files, credentials, provider secrets, or unredacted personal paths.
+  - type: input
+    id: codexfast-version
+    attributes:
+      label: codexfast-windows version or commit
+      placeholder: 0.49.1 or a commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows 11 x64
+        - Windows 10 x64
+        - macOS
+    validations:
+      required: true
+  - type: input
+    id: codex-build
+    attributes:
+      label: Codex Desktop package or build
+      description: Include the MSIX PackageFullName or macOS version/build pair.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: List the shortest sequence that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include sanitized launcher output and exit code.
+    validations:
+      required: true
+  - type: textarea
+    id: inspect
+    attributes:
+      label: Sanitized inspect output
+      description: On Windows, run `node .\bin\codexfast inspect` without starting Codex, then remove personal paths before posting.
+      render: text
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I did not attach proprietary Codex application files or credentials.
+          required: true

@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { SUPPORTED_APP_VERSIONS } from "../src/supported-app-versions.mts";
+import { SUPPORTED_WINDOWS_APP_VERSIONS } from "../src/supported-windows-app-versions.mts";
 
 type VersionBuild = {
   key: string;
@@ -8,8 +10,9 @@ type VersionBuild = {
   build: string;
 };
 
-const rootDir = resolve(new URL("..", import.meta.url).pathname);
+const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceVersions = Object.keys(SUPPORTED_APP_VERSIONS).map(parseVersionKey);
+const windowsVersionKeys = Object.keys(SUPPORTED_WINDOWS_APP_VERSIONS);
 
 function parseVersionKey(key: string): VersionBuild {
   const [version, build] = key.split("+");
@@ -66,8 +69,23 @@ assertSetEquals("docs/compatibility-matrix.md", matrixKeys, expectedKeys);
 assertReadmeMentions("README.md", sourceVersions);
 assertReadmeMentions("README.zh-CN.md", sourceVersions);
 
+for (const path of ["README.windows.md", "docs/windows-compatibility.md"]) {
+  const content = readRepoFile(path);
+  for (const key of windowsVersionKeys) {
+    const separatorIndex = key.lastIndexOf("+");
+    const packageName = key.slice(0, separatorIndex);
+    const version = key.slice(separatorIndex + 1);
+    if (!packageName || !version || !content.includes(packageName) || !content.includes(version)) {
+      console.error(`${path} does not mention supported Windows package ${key}`);
+      process.exitCode = 1;
+    }
+  }
+}
+
 if (process.exitCode && process.exitCode !== 0) {
   process.exit(process.exitCode);
 }
 
-console.log(`supported-version drift check passed (${sourceVersions.length} builds)`);
+console.log(
+  `supported-version drift check passed (${sourceVersions.length} macOS builds, ${windowsVersionKeys.length} Windows package versions)`,
+);

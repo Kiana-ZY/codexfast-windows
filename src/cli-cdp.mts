@@ -273,7 +273,10 @@ export class CdpConnection {
     }
   }
 
-  static connect(webSocketUrl: string): Promise<CdpConnection> {
+  static connect(
+    webSocketUrl: string,
+    expectedPort?: number,
+  ): Promise<CdpConnection> {
     return new Promise((resolve, reject) => {
       const url = new URL(webSocketUrl);
       if (url.protocol !== "ws:") {
@@ -282,6 +285,19 @@ export class CdpConnection {
       }
 
       const port = Number(url.port || "80");
+      const loopbackHosts = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+      if (!loopbackHosts.has(url.hostname.toLowerCase())) {
+        reject(new Error(`Refusing non-loopback CDP WebSocket host: ${url.hostname}`));
+        return;
+      }
+      if (expectedPort !== undefined && port !== expectedPort) {
+        reject(
+          new Error(
+            `Refusing CDP WebSocket port ${port}; expected ${expectedPort}.`,
+          ),
+        );
+        return;
+      }
       const key = randomBytes(16).toString("base64");
       const expectedAccept = createHash("sha1")
         .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
@@ -482,7 +498,10 @@ export async function waitForRuntimeBrowserConnection(
       if (version.webSocketDebuggerUrl) {
         debugRuntime("connecting browser target");
         try {
-          return await CdpConnection.connect(version.webSocketDebuggerUrl);
+          return await CdpConnection.connect(
+            version.webSocketDebuggerUrl,
+            debugPort,
+          );
         } catch (error) {
           lastError = asError(error);
         }
@@ -523,7 +542,10 @@ export async function waitForRuntimePatchConnection(debugPort: number): Promise<
         debuggerResponded = true;
         rendererTargetFound = true;
         try {
-          return await CdpConnection.connect(target.webSocketDebuggerUrl);
+          return await CdpConnection.connect(
+            target.webSocketDebuggerUrl,
+            debugPort,
+          );
         } catch (error) {
           lastError = asError(error);
         }

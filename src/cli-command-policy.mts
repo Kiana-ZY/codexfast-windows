@@ -20,6 +20,10 @@ export function isPublicLaunchCommand(command: string): boolean {
   return command === "launch";
 }
 
+export function isPublicInspectCommand(command: string): boolean {
+  return command === "inspect";
+}
+
 export function isHiddenLegacyCleanupCommand(command: string): boolean {
   return command === "repair";
 }

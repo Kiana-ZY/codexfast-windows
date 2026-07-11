@@ -7,29 +7,69 @@ export type RuntimePatchResult = {
   alreadyPatchedLabels: string[];
 };
 
-let runtimePatchBodyFunction:
-  | ((resourcePath: string, body: string) => RuntimePatchResult)
-  | null = null;
+export type RuntimePatchCompatibilityMatch = {
+  id: string;
+  label: string;
+  state: "guarded" | "patched" | "legacy-patched" | "ambiguous";
+  replacementVerified: boolean;
+  guardedCount: number;
+  patchedCount: number;
+  legacyPatchedCount: number;
+};
+
+type RuntimePatchEngine = {
+  apply: (resourcePath: string, body: string) => RuntimePatchResult;
+  inspectCompatibility:
+    | ((resourcePath: string, body: string) => RuntimePatchCompatibilityMatch[])
+    | null;
+};
+
+let runtimePatchEngineSource = "";
+let runtimePatchEngine: RuntimePatchEngine | null = null;
+
+function runtimePatchEngineForSource(patcherSource: string): RuntimePatchEngine {
+  if (runtimePatchEngine && runtimePatchEngineSource === patcherSource) {
+    return runtimePatchEngine;
+  }
+  const factory = new Function(
+    `${patcherSource}\nreturn {apply:applyRuntimePatchesToBody,inspectCompatibility:typeof inspectRuntimePatchCompatibility==="function"?inspectRuntimePatchCompatibility:null};`,
+  ) as () => unknown;
+  const candidate = factory() as Partial<RuntimePatchEngine> | null;
+  if (!candidate || typeof candidate.apply !== "function") {
+    throw new Error("Embedded runtime patch engine is unavailable.");
+  }
+  runtimePatchEngineSource = patcherSource;
+  runtimePatchEngine = {
+    apply: candidate.apply,
+    inspectCompatibility:
+      typeof candidate.inspectCompatibility === "function"
+        ? candidate.inspectCompatibility
+        : null,
+  };
+  return runtimePatchEngine;
+}
 
 export function applyRuntimePatchesToResponseBodyWithSource(
   patcherSource: string,
   resourcePath: string,
   body: string,
 ): RuntimePatchResult {
-  if (!runtimePatchBodyFunction) {
-    const factory = new Function(
-      `${patcherSource}\nreturn applyRuntimePatchesToBody;`,
-    ) as () => unknown;
-    const candidate = factory();
-    if (typeof candidate !== "function") {
-      throw new Error("Embedded runtime patch engine is unavailable.");
-    }
-    runtimePatchBodyFunction = candidate as (
-      resourcePath: string,
-      body: string,
-    ) => RuntimePatchResult;
+  return runtimePatchEngineForSource(patcherSource).apply(resourcePath, body);
+}
+
+export function inspectRuntimePatchCompatibilityWithSource(
+  patcherSource: string,
+  resourcePath: string,
+  body: string,
+): RuntimePatchCompatibilityMatch[] {
+  const inspectCompatibility = runtimePatchEngineForSource(patcherSource)
+    .inspectCompatibility;
+  if (!inspectCompatibility) {
+    throw new Error(
+      "Embedded runtime patch engine does not expose compatibility inspection.",
+    );
   }
-  return runtimePatchBodyFunction(resourcePath, body);
+  return inspectCompatibility(resourcePath, body);
 }
 
 export function isRuntimeJavaScriptResource(resourceUrl: string): boolean {

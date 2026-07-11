@@ -179,7 +179,7 @@ function main(): void {
   assertContains(readOutput(unsupportedLaunchOutput), "Action: launch", "expected launch to print an action header", readOutput(unsupportedLaunchOutput));
   assertContains(readOutput(unsupportedLaunchOutput), `codexfast version: ${packageVersion}`, "expected launch to print the current codexfast version in the action header", readOutput(unsupportedLaunchOutput));
   assertContains(readOutput(unsupportedLaunchOutput), "Compatibility: unsupported", "expected unsupported launch to print compatibility", readOutput(unsupportedLaunchOutput));
-  assertContains(readOutput(unsupportedLaunchOutput), "Runtime launch is blocked for this Codex.app version.", "expected unsupported launch to fail closed", readOutput(unsupportedLaunchOutput));
+  assertContains(readOutput(unsupportedLaunchOutput), "Runtime launch is blocked for this Codex version or package.", "expected unsupported launch to fail closed", readOutput(unsupportedLaunchOutput));
   assertContains(readOutput(unsupportedLaunchOutput), "Exit code: 1", "expected unsupported launch to return exit code 1", readOutput(unsupportedLaunchOutput));
   assertNoLaunchCalls(unsupportedLaunchOutput);
   assertNoBundleMutationTools(unsupportedLaunchOutput);
@@ -222,7 +222,7 @@ function main(): void {
   });
   assertContains(readOutput(launchSessionLostOutput), "Runtime launch completed.", "expected launch session-lost hook to reach a ready session first", readOutput(launchSessionLostOutput));
   assertContains(readOutput(launchSessionLostOutput), "Runtime patch session lost after 3 reconnect attempts:", "expected launch to report exhausted runtime reconnect attempts", readOutput(launchSessionLostOutput));
-  assertContains(readOutput(launchSessionLostOutput), "Codex.app will be closed because runtime patching is no longer active.", "expected exhausted runtime reconnect attempts to fail closed instead of leaving an unpatched Codex session running", readOutput(launchSessionLostOutput));
+  assertContains(readOutput(launchSessionLostOutput), "Codex will be closed because runtime patching is no longer active.", "expected exhausted runtime reconnect attempts to fail closed instead of leaving an unpatched Codex session running", readOutput(launchSessionLostOutput));
   assertNotContains(readOutput(launchSessionLostOutput), "Codex.app will keep running without further runtime patching.", "expected exhausted runtime reconnect attempts not to describe an unpatched Codex session as usable", readOutput(launchSessionLostOutput));
   assertContains(readOutput(launchSessionLostOutput), "Exit code: 1", "expected exhausted runtime reconnect attempts to fail launch after runtime patching is lost", readOutput(launchSessionLostOutput));
   assertNoBundleMutationTools(launchSessionLostOutput);
@@ -725,7 +725,7 @@ function main(): void {
   runScriptCommand(runningLaunchApp, ["launch"], runningLaunchOutput, { CODEXFAST_TEST_CODEX_RUNNING: "1", CODEXFAST_TEST_ALLOW_NONZERO: "1" });
   assertContains(readOutput(runningLaunchOutput), "Action: launch", "expected launch to print an action header", readOutput(runningLaunchOutput));
   assertContains(readOutput(runningLaunchOutput), "Compatibility: supported", "expected supported launch to print compatibility", readOutput(runningLaunchOutput));
-  assertContains(readOutput(runningLaunchOutput), "Codex.app is already running. Quit Codex.app before using runtime launch.", "expected launch to fail closed when Codex.app is running", readOutput(runningLaunchOutput));
+  assertContains(readOutput(runningLaunchOutput), "Codex is already running. Fully quit Codex before using runtime launch.", "expected launch to fail closed when Codex is running", readOutput(runningLaunchOutput));
   assertContains(readOutput(runningLaunchOutput), "Exit code: 1", "expected running launch to return exit code 1", readOutput(runningLaunchOutput));
   assertNoLaunchCalls(runningLaunchOutput);
   assertNoBundleMutationTools(runningLaunchOutput);

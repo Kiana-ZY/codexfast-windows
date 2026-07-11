@@ -4,10 +4,10 @@ Repository guidance for `codexfast`.
 
 ## Project Scope
 
-- This repo ships a single-file macOS runtime launcher for `Codex.app`.
+- This repo ships a single-file runtime launcher for `Codex.app` on macOS and the signed Codex Desktop MSIX on Windows.
 - The published entrypoint is generated as [`bin/codexfast`](./bin/codexfast).
 - Maintain TypeScript source under [`src/`](./src/) and regenerate the entrypoint with [`scripts/build-codexfast.mts`](./scripts/build-codexfast.mts).
-- The main regression test is [`test/re-sign-flow.sh`](./test/re-sign-flow.sh).
+- The cross-platform regression entrypoint is [`test/run-tests.mts`](./test/run-tests.mts); [`test/re-sign-flow.sh`](./test/re-sign-flow.sh) remains the macOS shell compatibility wrapper.
 
 ## Docs Index
 
@@ -67,7 +67,7 @@ Use this checklist for every future Codex bundle adaptation or patch-signature u
   - every Plugins gate required by the target build, including sidebar access, page content, plugin detail redirects, curated catalog visibility, install-button availability, install-modal content, plugin detail app-connect content, and post-install app connect where present
   - the Settings-side automatic-update switch, settings schema target, and launcher main-process hook that skips background update checks and forced automatic install scheduling while preserving manual update actions
   - the GPT-5.x model-list bridge plus GPT-5.5 and GPT-5.6 query selector injection targets, including the GPT-5.6 Sol/Terra/Luna allowlist, Max/Ultra effort filtering, and Luna's required Ultra exclusion
-  - unsupported-version blocking before runtime launch
+  - unsupported/incompatible blocking before runtime launch, plus Windows unlisted-version signature gating and dynamic resource discovery
   - generated CLI behavior for runtime patch extraction
 - Confirm runtime launch still:
   - requires Codex to be fully quit before launch
@@ -77,6 +77,7 @@ Use this checklist for every future Codex bundle adaptation or patch-signature u
   - closes the launched Codex process if the runtime patch session is lost after reconnect attempts are exhausted
   - leaves `app.asar`, `Info.plist`, and the app signature unchanged
   - fails closed without modifying the app when interception does not complete
+  - revalidates Windows manifest/ASAR/signature snapshots and binds all eight target responses to the expected renderer origin, dynamic resource path, and body hash before release
 - Do not ship a change that enables only part of the combined Fast feature set.
 - Do not describe Plugins as supported unless every Plugins gate required by that build still works cleanly.
 - Before claiming real-app support, run the manual checklist in [`docs/real-app-validation.md`](./docs/real-app-validation.md).
@@ -85,8 +86,9 @@ Use this checklist for every future Codex bundle adaptation or patch-signature u
 
 ## Release Notes
 
-- The published package name is `codexfast`.
-- `npx codexfast` should remain the shortest supported invocation path.
+- This independent repository is GitHub-source-only and uses `private: true`; do not publish it to npm.
+- The npm package `codexfast` belongs to upstream. Public usage in this repo must not imply that `npx codexfast` installs the Windows adaptation.
+- Keep clone-local `node ./bin/codexfast` commands working until a distinct package identity is explicitly approved.
 - README updates are required when usage, platform support, signing behavior, or recovery steps change.
 
 ## Safety

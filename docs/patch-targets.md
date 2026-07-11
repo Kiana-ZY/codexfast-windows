@@ -21,6 +21,23 @@ Source layout:
 - `src/patch-engine.mts` applies target specs to intercepted JavaScript bodies.
 - `src/cli-update-settings.mts` owns the launcher-side config reader and process-local main-process hook used to read `config.toml` dynamically before Sparkle background checks without disabling manual updater actions.
 
+## Windows Target Profile
+
+The Windows MSIX runtime profile filters the aggregate target list down to exactly these ids:
+
+| Target id | Label | Read-only match on `OpenAI.Codex` `26.707.3748.0` | Intent |
+| --- | --- | --- | --- |
+| `speed-setting-destructured-option-count` | `Speed setting` | `webview/assets/general-settings-Dtfq14Yt.js` | Remove the account availability gate while preserving the requirement that the selected model exposes more than one service-tier option. |
+| `speed-service-tier-allowance-26601` | `Speed service tier allowance` | `webview/assets/use-service-tier-settings-uyaJ6nX6.js` | Preserve official ChatGPT `fast_mode` checks and allow non-ChatGPT/custom-provider paths to compute and persist Fast. |
+| `speed-service-tier-request-allowance-26707` | `Speed service tier request allowance` | `webview/assets/read-service-tier-for-request-D2fynmwS.js` | Allow send/edit/resume request helpers to forward Fast for non-ChatGPT/custom-provider paths. |
+| `speed-service-tier-conversation-fallback-26707` | `Speed service tier conversation fallback` | `webview/assets/use-service-tier-settings-uyaJ6nX6.js` | Use the configured Settings tier for existing conversations instead of stale conversation or latest-turn state. |
+| `intelligence-speed-menu-options-boolean-code` | `Composer Intelligence Speed menu` | `webview/assets/composer-Bt9Tt576.js` | Remove the account gate while preserving the model service-tier option-count guard. |
+| `service-tier-slash-command` | `Fast slash command` | `webview/assets/composer-Bt9Tt576.js` | Enable the service-tier slash-command entry. |
+| `gpt5x-model-list-options` | `GPT-5.x model list` | `webview/assets/app-main-BEs0GGm0.js` | Add or normalize GPT-5.6 Sol/Terra/Luna metadata, with Max on all three and Ultra only on Sol/Terra. |
+| `gpt56-model-query-selector` | `GPT-5.6 model query selector` | `webview/assets/model-queries-DYpQPsG6.js` | Extend the hidden-model allowlist and enabled effort set so the injected entries survive downstream filtering. |
+
+No update, Plugins, launchd, Sparkle, or PlistBuddy target is eligible in the Windows profile. The archive paths above are the recorded baseline, not a hard-coded runtime table: Windows scans every JavaScript entry, requires each allowed guarded/patched/legacy signature to be globally unique, derives the renderer-relative paths from the archive, and verifies combined patch idempotency. All eight labels are then required from the expected renderer origin, dynamic path, and body hash before a target response is released; missing or mismatched targets terminate the PID tree returned by `IApplicationActivationManager`. Fast maps to the existing `priority` service tier and does not alter provider routing.
+
 | Feature | Target label | Current file | Needle | Patch intent |
 | --- | --- | --- | --- | --- |
 | Settings-side Fast control | `Speed setting` | `general-settings-*.js` | `settings.agent.speed.label` | Remove the guarded Fast-settings early return. |

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">
+  <Identity Name="OpenAI.Codex" ProcessorArchitecture="x64" Version="26.707.3748.0" Publisher="CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B" />
+  <Applications>
+    <Application Id="App" Executable="app/ChatGPT.exe" EntryPoint="Windows.FullTrustApplication" />
+  </Applications>
+</Package>

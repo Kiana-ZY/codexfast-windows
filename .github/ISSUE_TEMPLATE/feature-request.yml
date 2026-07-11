@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose a narrowly scoped launcher or maintenance improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user problem rather than only the proposed implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and compatibility considerations
+      description: Explain effects on fail-closed behavior, installed app integrity, permissions, and platform scope.
+    validations:
+      required: true

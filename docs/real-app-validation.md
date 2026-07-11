@@ -20,7 +20,22 @@ Use these checks when validating `launch` behavior. Do not mark a build as real-
 - `app.asar`, `Info.plist`, and the app code signature are unchanged after launch exits
 - If launch fails before runtime patching starts, the app signature and `app.asar` are still unchanged and no Codex main process is left running
 - Launch reports a clear failure when `Codex.app` is already running
-- Launch is blocked when the detected version/build is unsupported
+- Launch is blocked when the detected build is neither recorded nor signature-compatible under the active platform policy
+
+### Windows MSIX
+
+- Fully quit the Codex Desktop process tree under the selected WindowsApps/MSIX directory before launch; unrelated Codex CLI processes may remain running
+- Before quitting the active session, run `node .\bin\codexfast inspect` and record the PackageFullName, compatibility source, ASAR hash, and eight target mappings. `signature-compatible update` is acceptable for testing but is not yet a support claim
+- Run `node .\bin\codexfast launch` without administrator privileges
+- Confirm the action header prints the MSIX version, Package Family Name, Application Id, AUMID, executable, app.asar, and all eight required Fast/model target labels
+- Confirm launch reports `Speed setting`, `Speed service tier allowance`, `Speed service tier request allowance`, `Speed service tier conversation fallback`, `Composer Intelligence Speed menu`, `Fast slash command`, `GPT-5.x model list`, and `GPT-5.6 model query selector` before `Runtime launch completed`
+- Confirm Sol/Terra expose Max and Ultra while Luna exposes Max without Ultra
+- Confirm Settings Fast, composer `/fast`, and the Intelligence Speed menu expose Standard/Fast and agree on the selected tier
+- Confirm existing conversations and stop/edit/resend flows follow the configured Fast/Standard setting rather than stale turn state
+- Confirm the launcher remains running while Codex is open
+- Confirm requests still arrive at the user's configured provider, including `http://127.0.0.1:8317/v1` when that is the configured base URL; verify the selected model id and `service_tier: "priority"` for Fast in proxy logs
+- Confirm `app.asar`, `AppxManifest.xml`, the MSIX files, and package signature remain unchanged
+- Confirm a deliberately incompatible fixture or build fails closed and only the PID tree returned by the current activation is terminated
 
 ## Core App Checks
 

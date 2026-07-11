@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Troubleshooting guide
+    url: https://github.com/Kiana-ZY/codexfast-windows/blob/main/docs/troubleshooting.md
+    about: Check known launch, compatibility, and recovery guidance first.
+  - name: Security report
+    url: https://github.com/Kiana-ZY/codexfast-windows/security/advisories/new
+    about: Report security-sensitive issues privately.

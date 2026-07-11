@@ -1,15 +1,19 @@
 {
-  "name": "codexfast",
+  "name": "codexfast-windows",
   "version": "0.49.1",
-  "description": "Enable Fast mode, GPT-5.5/GPT-5.6, /fast, Speed menu, Plugins, and update controls in OpenAI Codex.app for custom API users on macOS.",
+  "private": true,
+  "description": "Runtime UI patches for verified macOS and signature-validated Windows OpenAI Codex Desktop builds without modifying the installed app.",
   "scripts": {
     "build": "tsx scripts/build-codexfast.mts",
     "build:check": "tsx scripts/build-codexfast.mts --check",
     "check:version-drift": "tsx scripts/check-supported-version-drift.mts",
+    "check:windows-shim": "tsx scripts/check-windows-npm-shim.mts",
     "inspect:bundle-targets": "tsx scripts/inspect-bundle-targets.mts",
-    "test": "pnpm build:check && pnpm check:version-drift && bash test/re-sign-flow.sh",
+    "test": "tsx scripts/build-codexfast.mts --check && tsx scripts/check-supported-version-drift.mts && tsx test/run-tests.mts && tsx scripts/check-windows-npm-shim.mts",
+    "test:mac": "tsx test/runtime-launch-flow.mts",
+    "test:windows": "tsx test/windows-flow.mts",
     "typecheck": "tsc --noEmit",
-    "prepack": "pnpm build:check"
+    "prepack": "tsx scripts/build-codexfast.mts --check"
   },
   "packageManager": "pnpm@10.33.0",
   "bin": {
@@ -21,11 +25,14 @@
   "files": [
     "bin/codexfast",
     "LICENSE",
+    "UPSTREAM.md",
     "README.md",
-    "README.zh-CN.md"
+    "README.zh-CN.md",
+    "README.windows.md"
   ],
   "os": [
-    "darwin"
+    "darwin",
+    "win32"
   ],
   "keywords": [
     "codexfast",
@@ -42,18 +49,22 @@
     "speed-menu",
     "custom-api",
     "electron-asar",
-    "macos"
+    "macos",
+    "windows",
+    "msix",
+    "aumid"
   ],
-  "homepage": "https://github.com/Veath/codexfast",
+  "homepage": "https://github.com/Kiana-ZY/codexfast-windows#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Veath/codexfast.git"
+    "url": "git+https://github.com/Kiana-ZY/codexfast-windows.git"
   },
   "bugs": {
-    "url": "https://github.com/Veath/codexfast/issues"
+    "url": "https://github.com/Kiana-ZY/codexfast-windows/issues"
   },
   "license": "MIT",
   "devDependencies": {
+    "@electron/asar": "^3.2.18",
     "@types/node": "^18.19.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"

@@ -1,7 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
 import {
   CdpConnection,
   cdpCommandWithTimeout,
@@ -14,13 +11,21 @@ import {
   isRuntimeJavaScriptResource,
   type RuntimePatchResult,
 } from "./cli-runtime-patcher.mts";
-import { childEnvWithAutomaticUpdateSetting } from "./cli-update-settings.mts";
+import {
+  defaultRuntimeLaunchPlatformOperations,
+  type RuntimeLaunchPlatformOperations,
+  type RuntimeLaunchProcess,
+} from "./cli-runtime-platform.mts";
+import {
+  runtimePatcherSourceForWindows,
+  runtimePatcherSourceWithTargetFilter,
+  runtimePatchWindowsRequiredInitialLabels,
+} from "./cli-runtime-profile.mts";
+import { verifyWindowsRuntimeCompatibilitySnapshot } from "./cli-windows-compatibility.mts";
 import {
   asError,
   debugRuntime,
   printLine,
-  resolveCommand,
-  run,
   sleep,
 } from "./cli-utils.mts";
 
@@ -47,7 +52,7 @@ type TargetAttachedToTargetParams = {
   waitingForDebugger?: boolean;
 };
 
-type RuntimePatchSessionHandle = {
+export type RuntimePatchSessionHandle = {
   patchedLabels: string[];
   close: () => void;
   lost: Promise<Error>;
@@ -56,11 +61,34 @@ type RuntimePatchSessionHandle = {
 type RuntimeFetchPatchOutcome = {
   labels: string[];
   sawJavaScript: boolean;
+  resourceOrigin: string;
+  resourcePath: string;
+  bodySha256: string;
 };
 
-type CodexRunningCheck =
-  | { ok: true; running: boolean }
-  | { ok: false; message: string };
+type RuntimeFetchPatchValidator = (
+  outcome: RuntimeFetchPatchOutcome,
+) => void;
+
+export type RuntimePatchExpectedTarget = {
+  label: string;
+  runtimePath: string;
+  contentSha256: string;
+  patchedContentSha256: string;
+};
+
+export type RuntimePatchSessionStarter = (
+  debugPort: number,
+  patcherSource: string,
+  requiredInitialLabels: string[],
+  initialResourcePaths: string[],
+  expectedInitialTargets: RuntimePatchExpectedTarget[],
+) => Promise<RuntimePatchSessionHandle>;
+
+export type RuntimePatchSessionDependencies = {
+  connect?: (debugPort: number) => Promise<CdpConnection>;
+  sleep?: (ms: number) => Promise<void>;
+};
 
 export type RuntimeLaunchOptions = {
   context: CodexfastContext;
@@ -71,6 +99,10 @@ export type RuntimeLaunchOptions = {
     quietLaunchctl?: boolean;
     reportRemoved?: boolean;
   }) => boolean;
+  platformOperations?: RuntimeLaunchPlatformOperations;
+  runtimePatchSessionStarter?: RuntimePatchSessionStarter;
+  debugPortFactory?: () => number;
+  windowsCompatibilityVerifier?: (context: CodexfastContext) => void;
 };
 
 const runtimePatchInitialTargetTimeoutMs = 45_000;
@@ -81,6 +113,12 @@ const runtimePatchHeartbeatIntervalMs = 5_000;
 const runtimePatchHeartbeatTimeoutMs = 2_000;
 const runtimePatchReconnectMaxAttempts = 3;
 const runtimePatchReconnectDelayMs = 1_000;
+const runtimePatchReconnectAttachMaxAttempts = 10;
+const runtimePatchReconnectAttachDelayMs = 100;
+const runtimePatchPreloadMaxAttempts = 3;
+const runtimePatchPreloadRetryDelayMs = 100;
+const runtimePatchRendererOriginMaxAttempts = 100;
+const runtimePatchRendererOriginRetryDelayMs = 50;
 const runtimePatchDefaultRequiredInitialLabels = ["Plugins access"];
 const runtimePatchNoPluginsAccessRequiredVersionKeys = new Set([
   "26.601.21317+3511",
@@ -127,89 +165,8 @@ const runtimePatchPluginTargetIdPrefixes = [
 ];
 const runtimePatchRequiredInitialReloadMaxAttempts = 1;
 
-function checkCodexRunning(): CodexRunningCheck {
-  if (process.env.CODEXFAST_TEST_CODEX_RUNNING === "1") {
-    return { ok: true, running: true };
-  }
-
-  const pgrepBin = resolveCommand("pgrep");
-  if (!pgrepBin) {
-    return {
-      ok: false,
-      message:
-        "Cannot determine whether Codex.app is running because pgrep was not found.",
-    };
-  }
-
-  for (const processName of ["Codex", "ChatGPT"]) {
-    const result = run(pgrepBin, ["-x", processName]);
-    if (result.status === 0) {
-      return { ok: true, running: true };
-    }
-    if (result.status !== 1) {
-      return {
-        ok: false,
-        message: `Cannot determine whether Codex.app is running because pgrep failed with exit code ${result.status}.`,
-      };
-    }
-  }
-  return { ok: true, running: false };
-}
-
 function randomDebugPort(): number {
   return 40_000 + (randomBytes(2).readUInt16BE(0) % 20_000);
-}
-
-function codexExecutablePathCandidates(context: CodexfastContext): string[] {
-  return [
-    join(context.paths.bundle, "Contents", "MacOS", "Codex"),
-    join(context.paths.bundle, "Contents", "MacOS", "ChatGPT"),
-  ];
-}
-
-function codexExecutablePath(context: CodexfastContext): string | null {
-  return codexExecutablePathCandidates(context).find((candidate) =>
-    existsSync(candidate)
-  ) ?? null;
-}
-
-function launchCodexProcess(
-  context: CodexfastContext,
-  debugPort: number,
-): ChildProcess {
-  const executable = codexExecutablePath(context);
-  if (!executable) {
-    throw new Error(
-      `Codex executable not found: tried ${codexExecutablePathCandidates(context).join(", ")}`,
-    );
-  }
-
-  const child = spawn(
-    executable,
-    [
-      `--remote-debugging-port=${debugPort}`,
-      "--remote-debugging-address=127.0.0.1",
-    ],
-    {
-      detached: true,
-      stdio: "ignore",
-      env: childEnvWithAutomaticUpdateSetting(),
-    },
-  );
-  child.on("error", () => undefined);
-  child.unref();
-  return child;
-}
-
-function terminateRuntimeLaunchProcess(child: ChildProcess): void {
-  if (!child.pid || child.killed) {
-    return;
-  }
-  try {
-    process.kill(-child.pid, "SIGTERM");
-  } catch {
-    child.kill();
-  }
 }
 
 function responseHeadersForFulfill(
@@ -233,6 +190,27 @@ function responseHeadersForFulfill(
   return forwarded;
 }
 
+function normalizedRuntimeResourcePath(resourceUrl: string): string {
+  try {
+    const parsed = new URL(resourceUrl);
+    if (parsed.protocol !== "app:") {
+      return "";
+    }
+    return decodeURIComponent(parsed.pathname).replace(/^\/+|\/+$/gu, "");
+  } catch {
+    return "";
+  }
+}
+
+function normalizedRuntimeResourceOrigin(resourceUrl: string): string {
+  try {
+    const parsed = new URL(resourceUrl);
+    return parsed.protocol === "app:" ? `app://${parsed.host}` : "";
+  } catch {
+    return "";
+  }
+}
+
 async function continueFetchRequest(
   cdp: CdpConnection,
   requestId: string,
@@ -241,16 +219,54 @@ async function continueFetchRequest(
   await cdp.send("Fetch.continueRequest", { requestId }, sessionId);
 }
 
+async function validateRuntimeFetchOutcomeOrBlock(
+  cdp: CdpConnection,
+  requestId: string,
+  sessionId: string | undefined,
+  validateOutcome: RuntimeFetchPatchValidator | undefined,
+  outcome: RuntimeFetchPatchOutcome,
+): Promise<void> {
+  try {
+    validateOutcome?.(outcome);
+  } catch (error) {
+    try {
+      await cdp.send(
+        "Fetch.failRequest",
+        { requestId, errorReason: "BlockedByClient" },
+        sessionId,
+      );
+    } catch {
+      cdp.close();
+    }
+    throw error;
+  }
+}
+
 async function handleFetchRequestPaused(
   cdp: CdpConnection,
   patcherSource: string,
   params: FetchRequestPausedParams,
   sessionId?: string,
+  validateOutcome?: RuntimeFetchPatchValidator,
 ): Promise<RuntimeFetchPatchOutcome> {
   const resourceUrl = params.request.url;
   if (!isRuntimeJavaScriptResource(resourceUrl)) {
+    const outcome = {
+      labels: [],
+      sawJavaScript: false,
+      resourceOrigin: normalizedRuntimeResourceOrigin(resourceUrl),
+      resourcePath: normalizedRuntimeResourcePath(resourceUrl),
+      bodySha256: "",
+    };
+    await validateRuntimeFetchOutcomeOrBlock(
+      cdp,
+      params.requestId,
+      sessionId,
+      validateOutcome,
+      outcome,
+    );
     await continueFetchRequest(cdp, params.requestId, sessionId);
-    return { labels: [], sawJavaScript: false };
+    return outcome;
   }
   debugRuntime(`paused ${resourceUrl}`);
 
@@ -261,19 +277,50 @@ async function handleFetchRequestPaused(
     }, sessionId);
   } catch {
     debugRuntime(`getResponseBody failed ${resourceUrl}`);
+    const outcome = {
+      labels: [],
+      sawJavaScript: true,
+      resourceOrigin: normalizedRuntimeResourceOrigin(resourceUrl),
+      resourcePath: normalizedRuntimeResourcePath(resourceUrl),
+      bodySha256: "",
+    };
+    await validateRuntimeFetchOutcomeOrBlock(
+      cdp,
+      params.requestId,
+      sessionId,
+      validateOutcome,
+      outcome,
+    );
     await continueFetchRequest(cdp, params.requestId, sessionId);
-    return { labels: [], sawJavaScript: true };
+    return outcome;
   }
 
   if (typeof bodyResult.body !== "string") {
     debugRuntime(`missing body ${resourceUrl}`);
+    const outcome = {
+      labels: [],
+      sawJavaScript: true,
+      resourceOrigin: normalizedRuntimeResourceOrigin(resourceUrl),
+      resourcePath: normalizedRuntimeResourcePath(resourceUrl),
+      bodySha256: "",
+    };
+    await validateRuntimeFetchOutcomeOrBlock(
+      cdp,
+      params.requestId,
+      sessionId,
+      validateOutcome,
+      outcome,
+    );
     await continueFetchRequest(cdp, params.requestId, sessionId);
-    return { labels: [], sawJavaScript: true };
+    return outcome;
   }
 
   const body = bodyResult.base64Encoded
     ? Buffer.from(bodyResult.body, "base64").toString("utf8")
     : bodyResult.body;
+  const resourcePath = normalizedRuntimeResourcePath(resourceUrl);
+  const resourceOrigin = normalizedRuntimeResourceOrigin(resourceUrl);
+  const bodySha256 = createHash("sha256").update(body).digest("hex");
   let patchResult: RuntimePatchResult;
   try {
     patchResult = applyRuntimePatchesToResponseBodyWithSource(
@@ -283,13 +330,41 @@ async function handleFetchRequestPaused(
     );
   } catch (error) {
     debugRuntime(`patch failed ${resourceUrl}: ${asError(error).message}`);
+    const outcome = {
+      labels: [],
+      sawJavaScript: true,
+      resourceOrigin,
+      resourcePath,
+      bodySha256,
+    };
+    await validateRuntimeFetchOutcomeOrBlock(
+      cdp,
+      params.requestId,
+      sessionId,
+      validateOutcome,
+      outcome,
+    );
     await continueFetchRequest(cdp, params.requestId, sessionId);
-    return { labels: [], sawJavaScript: true };
+    return outcome;
   }
   const labels = [
     ...patchResult.patchedLabels,
     ...patchResult.alreadyPatchedLabels,
   ];
+  const outcome = {
+    labels,
+    sawJavaScript: true,
+    resourceOrigin,
+    resourcePath,
+    bodySha256,
+  };
+  await validateRuntimeFetchOutcomeOrBlock(
+    cdp,
+    params.requestId,
+    sessionId,
+    validateOutcome,
+    outcome,
+  );
   if (patchResult.matchedLabels.length > 0) {
     debugRuntime(
       `matched ${resourceUrl}: ${patchResult.matchedLabels.join(", ")}`,
@@ -298,7 +373,7 @@ async function handleFetchRequestPaused(
 
   if (patchResult.content === body) {
     await continueFetchRequest(cdp, params.requestId, sessionId);
-    return { labels, sawJavaScript: true };
+    return outcome;
   }
 
   await cdp.send("Fetch.fulfillRequest", {
@@ -307,7 +382,7 @@ async function handleFetchRequestPaused(
     responseHeaders: responseHeadersForFulfill(params.responseHeaders),
     body: Buffer.from(patchResult.content, "utf8").toString("base64"),
   }, sessionId);
-  return { labels, sawJavaScript: true };
+  return outcome;
 }
 
 function runtimePatchSessionLostMessage(error: Error): string {
@@ -317,7 +392,7 @@ function runtimePatchSessionLostMessage(error: Error): string {
 function printRuntimePatchSessionLost(error: Error): void {
   printLine(error.message);
   printLine(
-    "Codex.app will be closed because runtime patching is no longer active.",
+    "Codex will be closed because runtime patching is no longer active.",
   );
   printLine(
     "Fully quit Codex and relaunch with codexfast to start a patched session.",
@@ -374,6 +449,26 @@ function runtimePatchRequiredInitialLabelsForVersion(
   return runtimePatchDefaultRequiredInitialLabels;
 }
 
+export function runtimePatchRequiredInitialLabelsForContext(
+  context: CodexfastContext,
+): string[] {
+  if (context.platform === "win32") {
+    return [...runtimePatchWindowsRequiredInitialLabels];
+  }
+  return runtimePatchRequiredInitialLabelsForVersion(
+    context.metadata.versionKey,
+  );
+}
+
+export function runtimePatchInitialResourcePathsForContext(
+  context: CodexfastContext,
+): string[] {
+  if (context.platform !== "win32") {
+    return [];
+  }
+  return [...context.runtimeCompatibility.resourcePaths];
+}
+
 export function runtimePatcherSourceForVersion(
   patcherSource: string,
   versionKey: string,
@@ -383,39 +478,25 @@ export function runtimePatcherSourceForVersion(
   }
 
   const skippedPrefixes = JSON.stringify(runtimePatchPluginTargetIdPrefixes);
-  return `${patcherSource}
+  return runtimePatcherSourceWithTargetFilter(
+    patcherSource,
+    `
 const __codexfastPluginTargetIdPrefixes = ${skippedPrefixes};
-const __codexfastShouldSkipTarget = (spec) => __codexfastPluginTargetIdPrefixes.some((prefix) => spec.id.startsWith(prefix));
-applyRuntimePatchesToBody = function(_resourcePath, body) {
-  let content = body;
-  const matchedLabels = [];
-  const patchedLabels = [];
-  const alreadyPatchedLabels = [];
-  for (const spec of TARGET_SPECS) {
-    if (__codexfastShouldSkipTarget(spec)) {
-      continue;
-    }
-    const match = inspectSpec(content, spec);
-    if (!match) {
-      continue;
-    }
-    matchedLabels.push(spec.label);
-    if (match.guarded) {
-      content = replaceContent(content, spec.guardedSignature, spec.applyReplacement);
-      patchedLabels.push(spec.label);
-      continue;
-    }
-    if (match.legacyPatched) {
-      content = replaceContentOrThrow(content, spec.legacyPatchedSignature, spec.normalizeReplacement, spec.label);
-      patchedLabels.push(spec.label);
-      continue;
-    }
-    if (match.patched) {
-      alreadyPatchedLabels.push(spec.label);
-    }
+const __codexfastShouldUseTarget = (spec) => !__codexfastPluginTargetIdPrefixes.some((prefix) => spec.id.startsWith(prefix));`,
+  );
+}
+
+export function runtimePatcherSourceForContext(
+  patcherSource: string,
+  context: CodexfastContext,
+): string {
+  if (context.platform === "win32") {
+    return runtimePatcherSourceForWindows(patcherSource);
   }
-  return { content, matchedLabels, patchedLabels, alreadyPatchedLabels };
-};`;
+  return runtimePatcherSourceForVersion(
+    patcherSource,
+    context.metadata.versionKey,
+  );
 }
 
 async function enableRuntimePatchInterception(
@@ -462,22 +543,82 @@ async function enableRuntimePatchAutoAttach(cdp: CdpConnection): Promise<void> {
   debugRuntime("Target.setAutoAttach ok");
 }
 
-async function startRuntimePatchSession(
+async function preloadRuntimePatchResources(
+  cdp: CdpConnection,
+  sessionId: string,
+  resourcePaths: string[],
+  sleepFor: (ms: number) => Promise<void>,
+): Promise<void> {
+  if (resourcePaths.length === 0) {
+    return;
+  }
+  const resources = JSON.stringify(resourcePaths);
+  const expression =
+    `Promise.all(${resources}.map(async resourcePath=>{const resourceUrl=new URL(resourcePath,document.baseURI).href;const response=await fetch(resourceUrl);if(!response.ok)throw new Error(\`codexfast preload failed: \${response.status} \${resourceUrl}\`);await response.text();return resourceUrl}))`;
+  for (let attempt = 1; attempt <= runtimePatchPreloadMaxAttempts; attempt += 1) {
+    try {
+      const evaluation = await cdp.send<{
+        exceptionDetails?: {
+          text?: string;
+          exception?: { description?: string };
+        };
+      }>("Runtime.evaluate", {
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+      }, sessionId);
+      const exceptionMessage =
+        evaluation?.exceptionDetails?.exception?.description ??
+        evaluation?.exceptionDetails?.text;
+      if (exceptionMessage) {
+        throw new Error(exceptionMessage);
+      }
+      debugRuntime(`preloaded ${resourcePaths.length} runtime patch resources`);
+      return;
+    } catch (error) {
+      const preloadError = asError(error);
+      const contextUnavailable =
+        /Cannot find (?:default )?execution context|Cannot find context|Execution context was destroyed|Inspected target navigated or closed/i
+          .test(preloadError.message);
+      if (!contextUnavailable || attempt >= runtimePatchPreloadMaxAttempts) {
+        throw new Error(
+          `Failed to preload runtime patch resources: ${preloadError.message}`,
+        );
+      }
+      debugRuntime(
+        `runtime patch resource preload retry ${attempt}/${runtimePatchPreloadMaxAttempts - 1}: ${preloadError.message}`,
+      );
+      await sleepFor(runtimePatchPreloadRetryDelayMs);
+    }
+  }
+}
+
+export async function startRuntimePatchSession(
   debugPort: number,
   patcherSource: string,
   requiredInitialLabels: string[],
+  initialResourcePaths: string[] = [],
+  expectedInitialTargets: RuntimePatchExpectedTarget[] = [],
+  dependencies: RuntimePatchSessionDependencies = {},
 ): Promise<RuntimePatchSessionHandle> {
-  let cdp = await waitForRuntimeBrowserConnection(debugPort);
+  const connect = dependencies.connect ?? waitForRuntimeBrowserConnection;
+  const sleepFor = dependencies.sleep ?? sleep;
+  let cdp = await connect(debugPort);
   const observedLabels = new Set<string>();
+  const rendererOriginsBySession = new Map<string, string>();
   const pausedRequestHandlers = new Set<Promise<void>>();
+  const targetSetupHandlers = new Set<Promise<void>>();
+  const reconnectObservedLabelsByGeneration = new Map<number, Set<string>>();
   const attachedPageSessions = new Set<string>();
   let activePageSessionId: string | null = null;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
   let failSession: (error: Error) => void = () => undefined;
   let keepSessionOpen = false;
   let initialCompleted = false;
+  let initialPreloadStarted = false;
   let closed = false;
   let reconnecting = false;
+  let reconnectSetupError: Error | null = null;
   let connectionGeneration = 0;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let resolveLost: (error: Error) => void = () => undefined;
@@ -522,23 +663,82 @@ async function startRuntimePatchSession(
         return;
       }
       if (attempt > 1) {
-        await sleep(runtimePatchReconnectDelayMs);
+        await sleepFor(runtimePatchReconnectDelayMs);
       }
       printLine(
         `Runtime patch session reconnecting (${attempt}/${runtimePatchReconnectMaxAttempts})...`,
       );
       try {
-        const nextCdp = await waitForRuntimeBrowserConnection(debugPort);
+        reconnectSetupError = null;
+        activePageSessionId = null;
+        attachedPageSessions.clear();
+        rendererOriginsBySession.clear();
+        const nextCdp = await connect(debugPort);
         connectionGeneration += 1;
+        const reconnectGeneration = connectionGeneration;
+        const reconnectObservedLabels = new Set<string>();
+        reconnectObservedLabelsByGeneration.set(
+          reconnectGeneration,
+          reconnectObservedLabels,
+        );
         cdp = nextCdp;
-        registerRuntimeFetchHandler(connectionGeneration);
-        registerRuntimeTargetHandler(connectionGeneration);
+        registerRuntimeFetchHandler(reconnectGeneration);
+        registerRuntimeTargetHandler(reconnectGeneration);
         await enableRuntimePatchAutoAttach(cdp);
+        for (
+          let attachAttempt = 1;
+          attachAttempt <= runtimePatchReconnectAttachMaxAttempts;
+          attachAttempt += 1
+        ) {
+          await Promise.resolve();
+          while (targetSetupHandlers.size > 0) {
+            await Promise.all([...targetSetupHandlers]);
+          }
+          while (pausedRequestHandlers.size > 0) {
+            await Promise.all([...pausedRequestHandlers]);
+          }
+          if (reconnectSetupError) {
+            throw reconnectSetupError;
+          }
+          const hasBoundAppRenderer = [...attachedPageSessions].some(
+            (sessionId) => rendererOriginsBySession.has(sessionId),
+          );
+          const missingReconnectLabels =
+            missingRuntimePatchRequiredInitialLabels(
+              reconnectObservedLabels,
+              requiredInitialLabels,
+            );
+          if (hasBoundAppRenderer && missingReconnectLabels.length === 0) {
+            break;
+          }
+          if (attachAttempt < runtimePatchReconnectAttachMaxAttempts) {
+            await sleepFor(runtimePatchReconnectAttachDelayMs);
+          }
+        }
+        const hasBoundAppRenderer = [...attachedPageSessions].some(
+          (sessionId) => rendererOriginsBySession.has(sessionId),
+        );
+        if (!hasBoundAppRenderer) {
+          throw new Error(
+            "CDP reconnected without a renderer bound to an app origin.",
+          );
+        }
+        const missingReconnectLabels = missingRuntimePatchRequiredInitialLabels(
+          reconnectObservedLabels,
+          requiredInitialLabels,
+        );
+        if (missingReconnectLabels.length > 0) {
+          throw new Error(
+            `CDP reconnected without observing required targets: ${missingReconnectLabels.join(", ")}.`,
+          );
+        }
+        reconnectObservedLabelsByGeneration.delete(reconnectGeneration);
         printLine("Runtime patch session reconnected.");
         reconnecting = false;
         return;
       } catch (error) {
         lastError = asError(error);
+        reconnectObservedLabelsByGeneration.delete(connectionGeneration);
         cdp.close();
       }
     }
@@ -555,7 +755,20 @@ async function startRuntimePatchSession(
       failSession(error);
       return;
     }
+    if (reconnecting) {
+      reconnectSetupError = error;
+      return;
+    }
     void reconnectRuntimePatchSession(error);
+  };
+
+  const rejectRuntimeFetchOutcome = (error: Error): never => {
+    if (!initialCompleted) {
+      failSession(error);
+    } else {
+      markSessionLost(error);
+    }
+    throw error;
   };
 
   const registerRuntimeFetchHandler = (generation: number): void => {
@@ -569,14 +782,72 @@ async function startRuntimePatchSession(
         patcherSource,
         params as FetchRequestPausedParams,
         message.sessionId,
+        (outcome) => {
+          const rendererSessionId = message.sessionId ?? "";
+          let expectedOrigin = rendererSessionId
+            ? rendererOriginsBySession.get(rendererSessionId) ?? ""
+            : "";
+          if (rendererSessionId && attachedPageSessions.has(rendererSessionId)) {
+            if (!outcome.resourceOrigin) {
+              rejectRuntimeFetchOutcome(
+                new Error(
+                  `Refusing non-app runtime response for renderer session ${rendererSessionId}.`,
+                ),
+              );
+            }
+            if (!expectedOrigin) {
+              expectedOrigin = outcome.resourceOrigin;
+              rendererOriginsBySession.set(rendererSessionId, expectedOrigin);
+              debugRuntime(
+                `bound pending renderer session ${rendererSessionId} to origin ${expectedOrigin}`,
+              );
+            } else if (outcome.resourceOrigin !== expectedOrigin) {
+              rejectRuntimeFetchOutcome(
+                new Error(
+                  `Refusing renderer origin change from ${expectedOrigin} to ${outcome.resourceOrigin} for session ${rendererSessionId}.`,
+                ),
+              );
+            }
+          }
+          if (expectedInitialTargets.length === 0) {
+            return;
+          }
+          for (const expectedTarget of expectedInitialTargets) {
+            const observedLabel = outcome.labels.includes(expectedTarget.label);
+            const observedExpectedPath =
+              outcome.resourcePath === expectedTarget.runtimePath;
+            if (!observedLabel && !observedExpectedPath) {
+              continue;
+            }
+            const expectedBodyHash =
+              outcome.bodySha256 === expectedTarget.contentSha256 ||
+              outcome.bodySha256 === expectedTarget.patchedContentSha256;
+            if (
+              !expectedOrigin ||
+              outcome.resourceOrigin !== expectedOrigin ||
+              !observedLabel ||
+              !observedExpectedPath ||
+              !expectedBodyHash
+            ) {
+              rejectRuntimeFetchOutcome(
+                new Error(
+                  `Runtime target ${expectedTarget.label} was observed from unexpected renderer origin ${outcome.resourceOrigin || "<unknown>"}, resource ${outcome.resourcePath || "<unknown>"} or body hash.`,
+                ),
+              );
+            }
+          }
+        },
       ).then((outcome) => {
         const { labels } = outcome;
+        const reconnectObservedLabels =
+          reconnectObservedLabelsByGeneration.get(generation);
         let sawNewLabel = false;
         for (const label of labels) {
           if (!observedLabels.has(label)) {
             sawNewLabel = true;
           }
           observedLabels.add(label);
+          reconnectObservedLabels?.add(label);
         }
         if (!initialCompleted && labels.length > 0) {
           markInitialObserved();
@@ -600,45 +871,98 @@ async function startRuntimePatchSession(
 
   const registerRuntimeTargetHandler = (generation: number): void => {
     const attachedCdp = cdp;
-    attachedCdp.on("Target.attachedToTarget", async (params: unknown) => {
-      if (closed || generation !== connectionGeneration) {
-        return;
-      }
-      const attached = params as TargetAttachedToTargetParams;
-      const targetType = attached.targetInfo?.type ?? "";
-      const targetUrl = attached.targetInfo?.url ?? "";
-      if (targetType === "browser") {
-        return;
-      }
-      if (targetType !== "page" && !targetUrl.startsWith("app://")) {
+    attachedCdp.on("Target.attachedToTarget", (params: unknown) => {
+      const task = (async (): Promise<void> => {
+        if (closed || generation !== connectionGeneration) {
+          return;
+        }
+        const attached = params as TargetAttachedToTargetParams;
+        const targetType = attached.targetInfo?.type ?? "";
+        const targetUrl = attached.targetInfo?.url ?? "";
+        if (targetType === "browser") {
+          return;
+        }
+        if (targetType !== "page") {
+          if (attached.waitingForDebugger) {
+            await attachedCdp.send(
+              "Runtime.runIfWaitingForDebugger",
+              undefined,
+              attached.sessionId,
+            );
+          }
+          return;
+        }
+        const targetOrigin = normalizedRuntimeResourceOrigin(targetUrl);
+        const pendingAppRenderer =
+          targetUrl === "" && attached.waitingForDebugger === true;
+        if (!targetOrigin && !pendingAppRenderer) {
+          handleConnectionFailure(
+            generation,
+            new Error(
+              `Refusing non-app renderer target ${targetUrl || "<empty>"}.`,
+            ),
+          );
+          return;
+        }
+
+        activePageSessionId = attached.sessionId;
+        attachedPageSessions.add(attached.sessionId);
+        if (targetOrigin) {
+          rendererOriginsBySession.set(attached.sessionId, targetOrigin);
+        }
+        debugRuntime(
+          `attached target type=${targetType} url=${targetUrl || "<pending>"} session=${attached.sessionId}`,
+        );
+        await enableRuntimePatchInterception(attachedCdp, {
+          sessionId: attached.sessionId,
+          waitForInitialLoad: false,
+          reload: !attached.waitingForDebugger,
+        });
         if (attached.waitingForDebugger) {
           await attachedCdp.send(
             "Runtime.runIfWaitingForDebugger",
             undefined,
             attached.sessionId,
           );
+          debugRuntime("Runtime.runIfWaitingForDebugger ok");
         }
-        return;
-      }
-
-      activePageSessionId = attached.sessionId;
-      attachedPageSessions.add(attached.sessionId);
-      debugRuntime(
-        `attached target type=${targetType} url=${targetUrl || "<pending>"} session=${attached.sessionId}`,
+        if (
+          !initialCompleted &&
+          !initialPreloadStarted &&
+          initialResourcePaths.length > 0
+        ) {
+          initialPreloadStarted = true;
+          for (
+            let originAttempt = 1;
+            originAttempt <= runtimePatchRendererOriginMaxAttempts;
+            originAttempt += 1
+          ) {
+            if (rendererOriginsBySession.has(attached.sessionId)) {
+              break;
+            }
+            if (originAttempt < runtimePatchRendererOriginMaxAttempts) {
+              await sleepFor(runtimePatchRendererOriginRetryDelayMs);
+            }
+          }
+          if (!rendererOriginsBySession.has(attached.sessionId)) {
+            throw new Error(
+              "Renderer did not navigate to an app origin before runtime resource preload.",
+            );
+          }
+          await preloadRuntimePatchResources(
+            attachedCdp,
+            attached.sessionId,
+            initialResourcePaths,
+            sleepFor,
+          );
+        }
+      })();
+      targetSetupHandlers.add(task);
+      task.then(
+        () => targetSetupHandlers.delete(task),
+        () => targetSetupHandlers.delete(task),
       );
-      await enableRuntimePatchInterception(attachedCdp, {
-        sessionId: attached.sessionId,
-        waitForInitialLoad: false,
-        reload: !attached.waitingForDebugger,
-      });
-      if (attached.waitingForDebugger) {
-        await attachedCdp.send(
-          "Runtime.runIfWaitingForDebugger",
-          undefined,
-          attached.sessionId,
-        );
-        debugRuntime("Runtime.runIfWaitingForDebugger ok");
-      }
+      return task;
     });
     attachedCdp.on("Target.detachedFromTarget", (params: unknown) => {
       const detached = params as { sessionId?: string };
@@ -646,6 +970,7 @@ async function startRuntimePatchSession(
         return;
       }
       attachedPageSessions.delete(detached.sessionId);
+      rendererOriginsBySession.delete(detached.sessionId);
       if (activePageSessionId === detached.sessionId) {
         activePageSessionId = [...attachedPageSessions][0] ?? null;
       }
@@ -878,28 +1203,29 @@ function waitForRuntimePatchSession(
   debugPort: number,
   patcherSource: string,
   requiredInitialLabels: string[],
+  initialResourcePaths: string[],
+  expectedInitialTargets: RuntimePatchExpectedTarget[],
 ): Promise<RuntimePatchSessionHandle> {
   return startRuntimePatchSession(
     debugPort,
     patcherSource,
     requiredInitialLabels,
+    initialResourcePaths,
+    expectedInitialTargets,
   );
 }
 
-function waitForRuntimeLaunchProcessExit(child: ChildProcess): Promise<number> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (exitCode: number): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      resolve(exitCode);
-    };
-
-    child.once("error", () => finish(1));
-    child.once("exit", (code) => finish(code ?? 0));
-  });
+async function terminateRuntimeLaunchProcess(
+  launchedProcess: RuntimeLaunchProcess,
+): Promise<void> {
+  try {
+    await launchedProcess.terminateTree();
+  } catch (error) {
+    const message =
+      `Failed to close launched Codex PID ${launchedProcess.pid}: ${asError(error).message}`;
+    debugRuntime(message);
+    printLine(message);
+  }
 }
 
 export async function runRuntimeLaunch(
@@ -912,23 +1238,43 @@ export async function runRuntimeLaunch(
     removeLegacyWatcherFiles,
     supportedAppVersionKeys,
   } = options;
+  const platformOperations = options.platformOperations ??
+    defaultRuntimeLaunchPlatformOperations;
+  const runtimePatchSessionStarter = options.runtimePatchSessionStarter ??
+    waitForRuntimePatchSession;
+  const debugPortFactory = options.debugPortFactory ?? randomDebugPort;
+  const windowsCompatibilityVerifier = options.windowsCompatibilityVerifier ??
+    verifyWindowsRuntimeCompatibilitySnapshot;
 
   printActionHeader("launch");
 
   if (!context.metadata.supported) {
-    printLine("Runtime launch is blocked for this Codex.app version.");
-    printLine(`Supported versions: ${supportedAppVersionKeys}`);
+    printLine("Runtime launch is blocked for this Codex version or package.");
+    printLine(`Supported version keys: ${supportedAppVersionKeys}`);
     return printExitBlock(1).exitCode;
   }
 
-  if (
-    !removeLegacyWatcherFiles({ quietLaunchctl: true, reportRemoved: true })
-  ) {
-    printLine("Failed to remove legacy auto-repair watcher.");
-    return printExitBlock(1).exitCode;
+  if (context.platform === "darwin") {
+    if (
+      !removeLegacyWatcherFiles({ quietLaunchctl: true, reportRemoved: true })
+    ) {
+      printLine("Failed to remove legacy auto-repair watcher.");
+      return printExitBlock(1).exitCode;
+    }
   }
 
-  const runningCheck = checkCodexRunning();
+  if (context.platform === "win32") {
+    try {
+      windowsCompatibilityVerifier(context);
+    } catch (error) {
+      printLine(
+        `Windows compatibility recheck failed: ${asError(error).message}`,
+      );
+      return printExitBlock(1).exitCode;
+    }
+  }
+
+  const runningCheck = platformOperations.checkRunning(context);
   if (!runningCheck.ok) {
     printLine(runningCheck.message);
     return printExitBlock(1).exitCode;
@@ -936,13 +1282,17 @@ export async function runRuntimeLaunch(
 
   if (runningCheck.running) {
     printLine(
-      "Codex.app is already running. Quit Codex.app before using runtime launch.",
+      "Codex is already running. Fully quit Codex before using runtime launch.",
     );
     return printExitBlock(1).exitCode;
   }
 
   if (process.env.CODEXFAST_TEST_RUNTIME_LAUNCH_SUCCESS === "1") {
-    printRuntimeLaunchReady(["Speed setting"]);
+    printRuntimeLaunchReady(
+      context.platform === "win32"
+        ? runtimePatchWindowsRequiredInitialLabels
+        : ["Speed setting"],
+    );
     if (process.env.CODEXFAST_TEST_RUNTIME_LAUNCH_SESSION_LOST === "1") {
       printRuntimePatchSessionLost(
         new Error(
@@ -957,8 +1307,8 @@ export async function runRuntimeLaunch(
   }
 
   if (process.env.CODEXFAST_TEST_RUNTIME_LAUNCH_PENDING_TARGETS === "1") {
-    const requiredInitialLabels = runtimePatchRequiredInitialLabelsForVersion(
-      context.metadata.versionKey,
+    const requiredInitialLabels = runtimePatchRequiredInitialLabelsForContext(
+      context,
     );
     const missingRequiredTargets = requiredInitialLabels.length > 0
       ? requiredInitialLabels.join(", ")
@@ -972,30 +1322,46 @@ export async function runRuntimeLaunch(
     return printExitBlock(1).exitCode;
   }
 
-  let child: ChildProcess | null = null;
+  let launchedProcess: RuntimeLaunchProcess | null = null;
   let session: RuntimePatchSessionHandle | null = null;
   try {
-    const debugPort = randomDebugPort();
-    child = launchCodexProcess(context, debugPort);
-    const childExit = waitForRuntimeLaunchProcessExit(child);
-    session = await waitForRuntimePatchSession(
+    const debugPort = debugPortFactory();
+    launchedProcess = platformOperations.launch(context, debugPort);
+    const processExit = launchedProcess.waitForExit();
+    void processExit.catch(() => undefined);
+    session = await runtimePatchSessionStarter(
       debugPort,
-      runtimePatcherSourceForVersion(
+      runtimePatcherSourceForContext(
         patcherSource,
-        context.metadata.versionKey,
+        context,
       ),
-      runtimePatchRequiredInitialLabelsForVersion(context.metadata.versionKey),
+      runtimePatchRequiredInitialLabelsForContext(context),
+      runtimePatchInitialResourcePathsForContext(context),
+      context.platform === "win32"
+        ? context.runtimeCompatibility.targets.map((target) => ({
+          label: target.label,
+          runtimePath: target.runtimePath,
+          contentSha256: target.contentSha256,
+          patchedContentSha256: target.patchedContentSha256,
+        }))
+        : [],
     );
+    if (context.platform === "win32") {
+      windowsCompatibilityVerifier(context);
+    }
     printRuntimeLaunchReady(session.patchedLabels);
     const outcome = await Promise.race([
-      childExit.then((exitCode) => ({ type: "child-exit" as const, exitCode })),
+      processExit.then((exitCode) => ({
+        type: "process-exit" as const,
+        exitCode,
+      })),
       session.lost.then((error) => ({ type: "session-lost" as const, error })),
     ]);
     if (outcome.type === "session-lost") {
       session.close();
       session = null;
-      if (child && !child.killed) {
-        terminateRuntimeLaunchProcess(child);
+      if (launchedProcess) {
+        await terminateRuntimeLaunchProcess(launchedProcess);
       }
       printRuntimePatchSessionLost(outcome.error);
       return printExitBlock(1).exitCode;
@@ -1009,8 +1375,8 @@ export async function runRuntimeLaunch(
       session.close();
       session = null;
     }
-    if (child && !child.killed) {
-      terminateRuntimeLaunchProcess(child);
+    if (launchedProcess) {
+      await terminateRuntimeLaunchProcess(launchedProcess);
     }
     printLine(`Runtime launch failed: ${asError(error).message}`);
   }

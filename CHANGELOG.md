@@ -6,6 +6,19 @@ This project follows a simple release-oriented changelog format.
 
 ## [Unreleased]
 
+### Added
+
+- Added the complete Windows Fast feature set for the signature-validated `OpenAI.Codex` / `OpenAI.CodexBeta` `26.707.3748.0` runtime profile, including Settings Fast, `/fast`, the Intelligence Speed menu, custom-provider service-tier allowance, request propagation, and conversation fallback alongside GPT-5.6 Sol/Terra/Luna.
+- Added read-only `codexfast inspect` and signature-gated Windows update adaptation. Unlisted official current-user packages can proceed only when package identity is exact and all eight allowed ASAR targets are globally unique, replacement-verifiable, and dynamically mapped to renderer resources.
+
+### Fixed
+
+- Made Windows launch wait for all eight model and Fast labels by preloading the exact lazy renderer chunks through the active CDP interception session, with bounded execution-context retries and fail-closed cleanup.
+- Bound Windows target responses to the attached app renderer origin, discovered runtime path, and inspected original/patched body hash before releasing them; reconnect setup errors, manifest/ASAR/signature changes, AUMID/PFN mismatches, and other registered Stable/Beta desktop processes now fail closed.
+- Accepted Electron's empty-URL waiting renderer target during startup, enabled interception before releasing it, and bound it to the first valid `app://` response without weakening non-app or cross-origin fail-closed checks.
+- Required every CDP reconnect to rebind an app renderer and re-observe all eight Windows targets, delayed lazy-resource preload until the pending renderer reaches an app origin, and verified the activation PID's exact random CDP command line before claiming ownership.
+- Moved Windows identity revalidation and `taskkill /PID /T /F` into one held-handle helper, while documenting the narrow non-atomic PID boundary inherent to the required taskkill interface.
+
 ## [0.49.1] - 2026-07-10
 
 ### Fixed

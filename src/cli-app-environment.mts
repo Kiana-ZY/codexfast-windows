@@ -1,10 +1,14 @@
 import { existsSync } from "node:fs";
 import type { CodexfastContext } from "./cli-context.mts";
-import { printLine, resolvePlistBuddy, run } from "./cli-utils.mts";
+import { loadWindowsAppEnvironment } from "./cli-platform-windows.mts";
+import { applyWindowsRuntimeCompatibility } from "./cli-windows-compatibility.mts";
+import { asError, printLine, resolvePlistBuddy, run } from "./cli-utils.mts";
 
 export type CheckRequirementsOptions = {
   context: CodexfastContext;
   supportedAppVersions: Record<string, string>;
+  supportedWindowsAppVersions: Record<string, string>;
+  patcherSource: string;
 };
 
 function readBundlePlistValueForContext(
@@ -48,7 +52,30 @@ export function checkRequirements(
   const {
     context,
     supportedAppVersions,
+    supportedWindowsAppVersions,
+    patcherSource,
   } = options;
+
+  if (context.platform === "win32") {
+    try {
+      loadWindowsAppEnvironment(context, supportedWindowsAppVersions);
+      applyWindowsRuntimeCompatibility(
+        context,
+        patcherSource,
+        supportedWindowsAppVersions,
+      );
+      return true;
+    } catch (error) {
+      printLine(`Windows app discovery failed: ${asError(error).message}`);
+      return false;
+    }
+  }
+
+  if (context.platform !== "darwin") {
+    printLine(`Unsupported platform: ${process.platform}.`);
+    printLine("codexfast supports macOS and Windows only.");
+    return false;
+  }
 
   if (!existsSync(context.paths.resources)) {
     printLine(

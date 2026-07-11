@@ -1,9 +1,11 @@
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { dirname, join, resolve } from "node:path";
 import ts from "typescript";
 import { SUPPORTED_APP_VERSIONS } from "../src/supported-app-versions.mts";
+import { SUPPORTED_WINDOWS_APP_VERSIONS } from "../src/supported-windows-app-versions.mts";
 
-const rootDir = resolve(new URL("..", import.meta.url).pathname);
+const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceDir = join(rootDir, "src");
 const outputPath = join(rootDir, "bin", "codexfast");
 const checkOnly = process.argv.includes("--check");
@@ -13,7 +15,7 @@ const compilerOptions = {
   module: ts.ModuleKind.CommonJS,
   target: ts.ScriptTarget.ES2022,
 };
-const cliModulePattern = String.raw`\.\/cli-(?:app-environment|cdp|command-policy|context|output|runtime-launch|runtime-patcher|update-settings|utils|watcher)\.mts`;
+const cliModulePattern = String.raw`\.\/cli-(?:app-environment|asar|cdp|command-policy|context|output|platform-macos|platform-windows|runtime-launch|runtime-patcher|runtime-platform|runtime-profile|update-settings|utils|watcher|windows-compatibility)\.mts`;
 
 function inlineLocalModuleSource(source: string): string {
   return source.replace(/^export /gm, "");
@@ -68,13 +70,19 @@ const patcherSource = ts.transpileModule(`"use strict";\n\n${patcherTargetsSourc
 }).outputText;
 const packageVersion = JSON.parse(readFileSync(join(rootDir, "package.json"), "utf8")).version as string;
 const cliModuleSource = [
+  "cli-asar.mts",
   "cli-app-environment.mts",
   "cli-cdp.mts",
   "cli-command-policy.mts",
   "cli-context.mts",
   "cli-output.mts",
+  "cli-platform-macos.mts",
+  "cli-platform-windows.mts",
+  "cli-runtime-platform.mts",
+  "cli-runtime-profile.mts",
   "cli-runtime-launch.mts",
   "cli-runtime-patcher.mts",
+  "cli-windows-compatibility.mts",
   "cli-update-settings.mts",
   "cli-utils.mts",
   "cli-watcher.mts",
@@ -92,12 +100,20 @@ const cliSource = insertAfterImports(
     `const __PACKAGE_VERSION__ = ${JSON.stringify(packageVersion)};`,
   )
   .replace(
-    [
-      "declare const __SUPPORTED_APP_VERSIONS__: Record<string, string>;",
-      "",
-      "const SUPPORTED_APP_VERSIONS = __SUPPORTED_APP_VERSIONS__;",
-    ].join("\n"),
+    "declare const __SUPPORTED_APP_VERSIONS__: Record<string, string>;",
+    "",
+  )
+  .replace(
+    "const SUPPORTED_APP_VERSIONS = __SUPPORTED_APP_VERSIONS__;",
     `const SUPPORTED_APP_VERSIONS = ${JSON.stringify(SUPPORTED_APP_VERSIONS)};`,
+  )
+  .replace(
+    "declare const __SUPPORTED_WINDOWS_APP_VERSIONS__: Record<string, string>;",
+    "",
+  )
+  .replace(
+    "const SUPPORTED_WINDOWS_APP_VERSIONS = __SUPPORTED_WINDOWS_APP_VERSIONS__;",
+    `const SUPPORTED_WINDOWS_APP_VERSIONS = ${JSON.stringify(SUPPORTED_WINDOWS_APP_VERSIONS)};`,
   );
 const transpiledCliSource = ts.transpileModule(cliSource, {
   compilerOptions,

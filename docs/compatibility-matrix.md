@@ -60,8 +60,18 @@ This file tracks verified `Codex.app` builds for `codexfast`.
 | `26.623.141536` | `4753` | `supported` | Settings Fast, `/fast`, Intelligence Speed menu, official Plugins support | `2026-07-07` | Verified by direct installed-bundle inspection and regression coverage. The `26.623.101652` Fast, service-tier, `/fast`, Intelligence Speed, GPT-5.5 model-list, automatic-update schema, Settings row, and launcher Sparkle-hook targets still apply with renamed assets. Plugins remains supported by the official app path, so codexfast skips Plugins runtime targets for this build. |
 | `26.707.31428` | `5059` | `supported` | Settings Fast, `/fast`, Intelligence Speed menu, GPT-5.6 Sol/Terra/Luna model list, official Plugins support | `2026-07-10` | Verified by direct installed-bundle inspection, live renderer/query-cache diagnosis, and regression coverage against the local `/Applications/ChatGPT.app` bundle id `com.openai.codex`. The build needs new request-helper, conversation-fallback, app-name-aware Settings row, priority/source/timeout model-list, and downstream `use_hidden_models` selector signatures; the GPT-5.6 bridge exposes Max/Ultra for Sol and Terra and Max without Ultra for Luna. codexfast skips Plugins runtime targets because Plugins remains supported by the official app path. |
 
+## Windows MSIX Matrix
+
+| Platform | Package | MSIX version | Status | Features | Verified | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| Windows | `OpenAI.Codex` | `26.707.3748.0` | `signature-verified` | GPT-5.6 Sol/Terra/Luna, Settings Fast, `/fast`, Intelligence Speed menu, and complete Fast service-tier propagation | `2026-07-10` | AppxManifest, AUMID generation, process lifecycle tests, generated CLI, Fast/model fixtures, and all eight read-only app.asar target signatures are verified. Real UI launch and `service_tier: "priority"` proxy-log validation remain intentionally pending because the active Codex session must not be closed in this task. |
+| Windows | `OpenAI.CodexBeta` | `26.707.3748.0` | `conditional` | Same model and Fast profile when all eight runtime labels match | `2026-07-10` | Discovery and version key are supported, but this package identity was not installed locally. Runtime target observation remains mandatory and fail-closed. |
+
+Unlisted Windows versions are not added to this matrix automatically. A current-user registered official package may run as `signature-compatible update` when package identity, manifest/signature snapshots, all eight globally unique ASAR signatures, replacement verification, and the CDP origin/path/body-hash gate succeed. That runtime state remains unverified until the manual real-app checklist passes and a row is added here.
+
 ## Update Rules
 
 - Add a row only after direct bundle inspection and regression updates.
-- If a build is not whitelisted yet, mark it `investigating` or `unsupported`.
-- When support status changes, update both this file and the whitelist in `src/supported-app-versions.mts`.
+- For macOS, if a build is not whitelisted yet, mark it `investigating` or `unsupported`.
+- For Windows, do not convert `signature-compatible update` into `signature-verified` or `supported` until real UI and request-path validation is complete.
+- When support status changes, update this file and the relevant platform version table.

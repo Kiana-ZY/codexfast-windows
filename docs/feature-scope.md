@@ -11,6 +11,17 @@ Use it when you need a quick answer to "what does this repo actually enable?" be
 - Legacy bundle patch commands and internal file-patch/restore flows have been removed.
 - If a user previously installed the launchd auto-repair watcher, `launch` removes the legacy watcher files before starting Codex.
 
+## Platform Profiles
+
+- macOS keeps the existing verified feature set documented below.
+- Windows `26.707.3748.0` is the recorded baseline for the GPT-5.6 model bridge plus the complete combined Fast feature set: Settings Fast, custom-provider service-tier allowance, request allowance, conversation fallback, `/fast`, and the Intelligence Speed menu.
+- A current-user registered official Windows update may use the same profile as `signature-compatible update` only when all eight allowed signatures are globally unique in the read-only ASAR, replacement verification succeeds, and manifest/PFN/AUMID/executable identity remains stable. This is a compatibility gate, not a real-app validation claim.
+- Windows does not enable Sparkle, launchd, PlistBuddy, the macOS updater hook, or Plugins targets.
+- Windows activation uses the registered MSIX AUMID through `IApplicationActivationManager` and does not request administrator privileges.
+- Windows compatibility is fail-closed before and after activation: all eight required labels (`Speed setting`, `Speed service tier allowance`, `Speed service tier request allowance`, `Speed service tier conversation fallback`, `Composer Intelligence Speed menu`, `Fast slash command`, `GPT-5.x model list`, and `GPT-5.6 model query selector`) must first pass read-only ASAR inspection and then be observed from the expected renderer origin, resource path, and body hash, or the launched PID tree is terminated.
+- Neither platform changes the configured model provider or base URL. UI catalog injection does not bypass provider or server authorization.
+- On Windows, selecting Fast maps to `service_tier: "priority"`. It is not a model id and does not unlock a server-side entitlement; the configured provider must accept that request field.
+
 ## Current Feature Set
 
 ### Settings-side Fast control
@@ -69,4 +80,4 @@ Use it when you need a quick answer to "what does this repo actually enable?" be
 - `Plugins` support should not be described as available unless the sidebar/page gates still work cleanly on the target build.
 - `GPT-5.x` model-list support should not be described as provider support. It is only a UI catalog entry.
 - `Disable automatic updates` should be described as suppression for automatic background checks and forced install scheduling, not as a global updater removal.
-- Compatibility claims must also match `docs/compatibility-matrix.md` and the strict whitelist in `src/supported-app-versions.mts`.
+- Real support claims must match `docs/compatibility-matrix.md` and the relevant recorded version table. A Windows `signature-compatible update` remains unverified until the manual real-app checklist passes.

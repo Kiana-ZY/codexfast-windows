@@ -6,6 +6,7 @@ import {
 import {
   isHelpCommand,
   isHiddenLegacyCleanupCommand,
+  isPublicInspectCommand,
   isPublicLaunchCommand,
   isRuntimeSelftestCommand,
   isVersionCommand,
@@ -20,31 +21,51 @@ import {
   runRuntimeUrlSelfTest,
 } from './cli-runtime-patcher.mts';
 import { runRuntimeLaunch } from './cli-runtime-launch.mts';
+import { runtimePatchWindowsRequiredInitialLabels } from './cli-runtime-profile.mts';
 import {
   createWatcherFlow,
   type WatcherFlowOptions,
 } from './cli-watcher.mts';
-import {
-  printLine,
-  run,
-} from './cli-utils.mts';
+import { printLine } from './cli-utils.mts';
 
 declare const __PATCHER_SOURCE__: string;
 declare const __PACKAGE_VERSION__: string;
 declare const __SUPPORTED_APP_VERSIONS__: Record<string, string>;
+declare const __SUPPORTED_WINDOWS_APP_VERSIONS__: Record<string, string>;
 
 const SUPPORTED_APP_VERSIONS = __SUPPORTED_APP_VERSIONS__;
+const SUPPORTED_WINDOWS_APP_VERSIONS = __SUPPORTED_WINDOWS_APP_VERSIONS__;
 const context = createCodexfastContext();
-const supportedAppVersionKeys = Object.keys(SUPPORTED_APP_VERSIONS).join(', ');
+const supportedAppVersionKeys = Object.keys(
+  context.platform === 'win32'
+    ? SUPPORTED_WINDOWS_APP_VERSIONS
+    : SUPPORTED_APP_VERSIONS,
+).join(', ');
 const launchAgentFileName = 'com.codexfast.watcher.plist';
 
 function printActionHeader(action: string): void {
   printActionHeaderBlock(action, {
     codexfastVersion: __PACKAGE_VERSION__,
+    platform: context.platform,
+    bundle: context.paths.bundle,
     resources: context.paths.resources,
+    appxManifest: context.paths.appxManifest,
+    executable: context.paths.executable,
+    appAsar: context.paths.appAsar,
     version: context.metadata.version,
     build: context.metadata.build,
     compatibility: context.metadata.compatibility,
+    packageName: context.metadata.packageName,
+    packageFullName: context.metadata.packageFullName,
+    publisher: context.metadata.publisher,
+    packageFamilyName: context.metadata.packageFamilyName,
+    applicationId: context.metadata.applicationId,
+    appUserModelId: context.metadata.appUserModelId,
+    patchTargets: context.platform === 'win32'
+      ? runtimePatchWindowsRequiredInitialLabels
+      : [],
+    compatibilitySource: context.runtimeCompatibility.source,
+    appAsarSha256: context.runtimeCompatibility.appAsarSha256,
   });
 }
 
@@ -57,6 +78,7 @@ function printUsage(): void {
   printLine('');
   printLine('Commands:');
   printLine('  launch             Launch Codex with runtime patches');
+  printLine('  inspect            Inspect Windows compatibility without launching Codex');
   printLine('  version            Print the codexfast version');
   printLine('  help               Show this help');
 }
@@ -87,7 +109,9 @@ async function showMenu(): Promise<number> {
 
   try {
     while (true) {
-      run('clear', []);
+      if (output.isTTY) {
+        console.clear();
+      }
       printLine('codexfast');
       printLine('');
       printLine('1) Launch Codex with runtime patches');
@@ -143,9 +167,17 @@ async function main(): Promise<number> {
     return 0;
   }
   if (isHiddenLegacyCleanupCommand(command)) {
+    if (context.platform === 'win32') {
+      printLine('Legacy launchd watcher cleanup is not applicable on Windows.');
+      return 0;
+    }
     return createWatcherFlow(watcherFlowOptions()).cleanupLegacyWatcherCommand();
   }
-  if (command && !isPublicLaunchCommand(command)) {
+  if (
+    command &&
+    !isPublicLaunchCommand(command) &&
+    !isPublicInspectCommand(command)
+  ) {
     printUsage();
     return 1;
   }
@@ -154,9 +186,28 @@ async function main(): Promise<number> {
     !checkRequirements({
       context,
       supportedAppVersions: SUPPORTED_APP_VERSIONS,
+      supportedWindowsAppVersions: SUPPORTED_WINDOWS_APP_VERSIONS,
+      patcherSource: __PATCHER_SOURCE__,
     })
   ) {
     return 1;
+  }
+
+  if (isPublicInspectCommand(command)) {
+    if (context.platform !== 'win32') {
+      printLine('The inspect command is currently available for Windows MSIX only.');
+      return 1;
+    }
+    printActionHeader('inspect');
+    printLine('Verified runtime target resources:');
+    for (const target of context.runtimeCompatibility.targets) {
+      printLine(
+        `  ${target.label} [${target.id}] ${target.state} ${target.archivePath} -> ${target.runtimePath}`,
+      );
+    }
+    printLine('');
+    printLine('Compatibility inspection completed without launching Codex.');
+    return 0;
   }
 
   if (isPublicLaunchCommand(command)) {

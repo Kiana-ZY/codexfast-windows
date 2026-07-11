@@ -45,7 +45,7 @@ export function runRuntimePatchSuite(): void {
     });
     assertContains(
       childEnv.NODE_OPTIONS ?? "",
-      `--require="${codexHomeWithAutomaticUpdatesAllowed}/.tmp/codexfast/main-process-hook.cjs"`,
+      `--require="${join(codexHomeWithAutomaticUpdatesAllowed, ".tmp", "codexfast", "main-process-hook.cjs").replaceAll("\\", "\\\\")}"`,
       "expected automatic update main-process hook to be present even before the setting is enabled so the first click can persist",
     );
     if (childEnv.CODEXFAST_DISABLE_AUTOMATIC_UPDATES != null) {
@@ -63,7 +63,7 @@ export function runRuntimePatchSuite(): void {
     });
     assertContains(
       childEnv.NODE_OPTIONS ?? "",
-      `--require="${codexHomeWithSpace}/.tmp/codexfast/main-process-hook.cjs"`,
+      `--require="${join(codexHomeWithSpace, ".tmp", "codexfast", "main-process-hook.cjs").replaceAll("\\", "\\\\")}"`,
       "expected automatic update main-process hook path to remain intact when CODEX_HOME contains spaces",
     );
     if (childEnv.CODEXFAST_DISABLE_AUTOMATIC_UPDATES != null) {

@@ -1,0 +1,45 @@
+name: Compatibility request
+description: Request inspection of a new Codex Desktop build.
+title: "[Compatibility]: "
+labels:
+  - compatibility
+body:
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows 11 x64
+        - Windows 10 x64
+        - macOS
+    validations:
+      required: true
+  - type: input
+    id: package
+    attributes:
+      label: Package or version/build
+      description: Use PackageFullName on Windows or version plus build on macOS.
+    validations:
+      required: true
+  - type: textarea
+    id: inspect
+    attributes:
+      label: Read-only compatibility output
+      description: Provide sanitized `node .\bin\codexfast inspect` output on Windows. Do not upload app bundles or archives.
+      render: text
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+      description: Explain whether launch is blocked, which target is missing, or which UI path changed.
+    validations:
+      required: true
+  - type: checkboxes
+    id: validation
+    attributes:
+      label: Confirmation
+      options:
+        - label: I understand static signature compatibility is not a real-app support claim.
+          required: true
+        - label: I have not attached proprietary Codex bundle contents.
+          required: true
