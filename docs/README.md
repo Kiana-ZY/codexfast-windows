@@ -12,6 +12,8 @@ Use these docs for decisions, troubleshooting, and bundle adaptations that futur
   - Verified `Codex.app` version/build pairs, support status, and supported feature paths.
 - [`windows-compatibility.md`](./windows-compatibility.md)
   - Windows MSIX discovery, supported package versions, AUMID details, target signatures, and validation status.
+- [`codexfast-windows-best-practices.html`](./codexfast-windows-best-practices.html)
+  - Offline interactive Windows usage guide with copyable commands, persistent checklists, update gates, and rollback steps.
 - [`patch-targets.md`](./patch-targets.md)
   - High-level mapping from exposed features to the current runtime patch targets.
 - [`../src/`](../src/)

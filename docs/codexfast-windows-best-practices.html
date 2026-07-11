@@ -1,0 +1,1504 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <link rel="icon" href="data:,">
+  <title>CodexFast Windows 最佳实践</title>
+  <!--
+    Design assumptions:
+    - Audience: the owner/operator of this local codexfast-windows checkout.
+    - Primary workflow: desktop shortcut + hidden tray launcher, not a visible terminal.
+    - The page must work from file:// without a server or external assets.
+    - CodexFast is presented as an independent runtime launcher, not an OpenAI product.
+    - Commands stay project-relative so this document remains portable.
+  -->
+  <style>
+    :root {
+      --page: #f4f7f7;
+      --paper: #ffffff;
+      --ink: #17201f;
+      --muted: #5d6a68;
+      --line: #d7dfdd;
+      --line-strong: #aebbb8;
+      --green: #087f5b;
+      --green-soft: #e7f5ef;
+      --blue: #2358a7;
+      --blue-soft: #edf3fb;
+      --amber: #a45b08;
+      --amber-soft: #fff3df;
+      --red: #b42318;
+      --red-soft: #ffebe9;
+      --code: #121a19;
+      --code-text: #e8f1ef;
+      --shadow: 0 12px 32px rgba(31, 49, 45, 0.08);
+      --radius: 6px;
+      --sidebar-width: 272px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--page);
+      color: var(--ink);
+      font-family: "Aptos", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+      font-size: 16px;
+      line-height: 1.75;
+      letter-spacing: 0;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button,
+    a {
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    button:focus-visible,
+    a:focus-visible,
+    input:focus-visible {
+      outline: 3px solid rgba(35, 88, 167, 0.28);
+      outline-offset: 2px;
+    }
+
+    a {
+      color: var(--blue);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    code,
+    pre,
+    .mono {
+      font-family: "Cascadia Code", "Cascadia Mono", Consolas, monospace;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 24px 20px;
+      background: #182321;
+      color: #eef5f3;
+      border-right: 1px solid #2c3a37;
+      overflow-y: auto;
+    }
+
+    .brand {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      gap: 12px;
+      align-items: center;
+      padding-bottom: 22px;
+      border-bottom: 1px solid #33423f;
+    }
+
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #71847f;
+      border-radius: 4px;
+      color: #ffffff;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .brand-name {
+      margin: 0;
+      font-family: Bahnschrift, "Microsoft YaHei UI", sans-serif;
+      font-size: 17px;
+      font-weight: 650;
+      line-height: 1.2;
+    }
+
+    .brand-caption {
+      margin: 3px 0 0;
+      color: #aebdb9;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .side-label {
+      margin: 24px 10px 8px;
+      color: #8fa09c;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .side-nav {
+      display: grid;
+      gap: 4px;
+    }
+
+    .side-nav button {
+      width: 100%;
+      min-height: 44px;
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+      padding: 8px 10px;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      background: transparent;
+      color: #c9d5d2;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .side-nav button:hover {
+      background: #22302d;
+      color: #ffffff;
+    }
+
+    .side-nav button[aria-current="page"] {
+      background: #e8f3ef;
+      color: #163b31;
+      border-color: #e8f3ef;
+    }
+
+    .nav-index {
+      color: inherit;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 12px;
+      opacity: 0.7;
+    }
+
+    .side-footer {
+      margin-top: auto;
+      padding-top: 22px;
+      border-top: 1px solid #33423f;
+      color: #aebdb9;
+      font-size: 12px;
+    }
+
+    .side-footer code {
+      display: block;
+      margin-top: 6px;
+      overflow-wrap: anywhere;
+      color: #e8efed;
+      font-size: 11px;
+      line-height: 1.55;
+    }
+
+    .main {
+      min-width: 0;
+    }
+
+    .topbar {
+      min-height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px clamp(20px, 4vw, 56px);
+      background: rgba(255, 255, 255, 0.94);
+      border-bottom: 1px solid var(--line);
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      backdrop-filter: blur(14px);
+    }
+
+    .topbar-title {
+      min-width: 0;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .topbar-title span {
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    .topbar-actions {
+      display: flex;
+      gap: 8px;
+      flex: none;
+    }
+
+    .action-button {
+      min-height: 40px;
+      padding: 8px 12px;
+      border: 1px solid var(--line-strong);
+      border-radius: 4px;
+      background: var(--paper);
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    .action-button:hover {
+      border-color: #71817d;
+      background: #f6f9f8;
+    }
+
+    .content {
+      width: min(1120px, 100%);
+      margin: 0 auto;
+      padding: 42px clamp(20px, 4vw, 56px) 72px;
+    }
+
+    .intro {
+      padding-bottom: 32px;
+      border-bottom: 1px solid var(--line-strong);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--green);
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin-top: 0;
+      font-family: Bahnschrift, "Microsoft YaHei UI", sans-serif;
+      text-wrap: balance;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      max-width: 780px;
+      margin-bottom: 14px;
+      font-size: 38px;
+      line-height: 1.24;
+      font-weight: 650;
+    }
+
+    .intro-copy {
+      max-width: 820px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 17px;
+      text-wrap: pretty;
+    }
+
+    .facts {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin-top: 28px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .fact {
+      min-height: 104px;
+      padding: 18px 20px;
+      border-right: 1px solid var(--line);
+    }
+
+    .fact:last-child {
+      border-right: 0;
+    }
+
+    .fact-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .fact-value {
+      margin-top: 6px;
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1.5;
+    }
+
+    .mode-switcher {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0;
+      margin: 28px 0 0;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--paper);
+    }
+
+    .mode-switcher button {
+      min-height: 52px;
+      padding: 10px 12px;
+      border: 0;
+      border-right: 1px solid var(--line);
+      background: var(--paper);
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .mode-switcher button:last-child {
+      border-right: 0;
+    }
+
+    .mode-switcher button:hover {
+      background: #f4f7f6;
+      color: var(--ink);
+    }
+
+    .mode-switcher button[aria-selected="true"] {
+      background: var(--ink);
+      color: #ffffff;
+    }
+
+    .guide-view {
+      padding-top: 34px;
+      animation: reveal 180ms ease-out;
+    }
+
+    .guide-view[hidden] {
+      display: none;
+    }
+
+    @keyframes reveal {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .view-heading {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 20px;
+      align-items: end;
+      padding-bottom: 22px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .view-heading h2 {
+      margin-bottom: 6px;
+      font-size: 27px;
+      line-height: 1.3;
+    }
+
+    .view-heading p {
+      max-width: 720px;
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .view-tag {
+      padding: 5px 9px;
+      border: 1px solid var(--line-strong);
+      border-radius: 4px;
+      color: var(--muted);
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .section {
+      padding: 30px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section:last-child {
+      border-bottom: 0;
+    }
+
+    .section h3 {
+      margin-bottom: 10px;
+      font-size: 20px;
+      line-height: 1.35;
+    }
+
+    .section > p {
+      max-width: 840px;
+      margin: 0 0 18px;
+      color: var(--muted);
+      text-wrap: pretty;
+    }
+
+    .callout {
+      display: grid;
+      grid-template-columns: 8px minmax(0, 1fr);
+      margin: 20px 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--paper);
+      overflow: hidden;
+    }
+
+    .callout-bar {
+      background: var(--green);
+    }
+
+    .callout[data-tone="amber"] .callout-bar {
+      background: var(--amber);
+    }
+
+    .callout[data-tone="red"] .callout-bar {
+      background: var(--red);
+    }
+
+    .callout-body {
+      padding: 16px 18px;
+    }
+
+    .callout-title {
+      margin: 0 0 3px;
+      font-weight: 750;
+    }
+
+    .callout-copy {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .command {
+      margin: 16px 0;
+      border: 1px solid #2f3d3a;
+      border-radius: var(--radius);
+      background: var(--code);
+      color: var(--code-text);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    .command-head {
+      min-height: 42px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 7px 8px 7px 16px;
+      border-bottom: 1px solid #2f3d3a;
+      color: #9eb0ac;
+      font-size: 12px;
+    }
+
+    .copy-button {
+      width: 40px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #485854;
+      border-radius: 4px;
+      background: #1e2a28;
+      color: #f4f8f7;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 18px;
+      cursor: pointer;
+    }
+
+    .copy-button:hover {
+      background: #2b3a37;
+      border-color: #71827e;
+    }
+
+    pre {
+      margin: 0;
+      padding: 18px;
+      overflow-x: auto;
+      color: var(--code-text);
+      font-size: 13px;
+      line-height: 1.7;
+      white-space: pre;
+      tab-size: 2;
+    }
+
+    .steps {
+      display: grid;
+      gap: 0;
+      margin: 18px 0 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 52px minmax(0, 1fr);
+      gap: 14px;
+      padding: 18px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .step-number {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      border-radius: 50%;
+      color: var(--muted);
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .step h3,
+    .step h4 {
+      margin: 0 0 4px;
+      font-family: Bahnschrift, "Microsoft YaHei UI", sans-serif;
+      font-size: 16px;
+    }
+
+    .step p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .checklist {
+      display: grid;
+      border-top: 1px solid var(--line);
+      margin-top: 18px;
+    }
+
+    .check-row {
+      min-height: 58px;
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .check-row input {
+      width: 20px;
+      height: 20px;
+      margin: 0;
+      accent-color: var(--green);
+      cursor: pointer;
+    }
+
+    .check-row label {
+      cursor: pointer;
+    }
+
+    .check-row:has(input:checked) label {
+      color: var(--muted);
+      text-decoration: line-through;
+      text-decoration-thickness: 1px;
+    }
+
+    .check-note {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .matrix {
+      width: 100%;
+      margin-top: 18px;
+      border-collapse: collapse;
+      background: var(--paper);
+      font-size: 14px;
+    }
+
+    .matrix th,
+    .matrix td {
+      padding: 13px 14px;
+      border: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .matrix th {
+      background: #edf2f1;
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-weight: 700;
+    }
+
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      flex: none;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    .status[data-tone="amber"] .status-dot {
+      background: var(--amber);
+    }
+
+    .status[data-tone="red"] .status-dot {
+      background: var(--red);
+    }
+
+    .two-column {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 22px;
+      margin-top: 18px;
+    }
+
+    .plain-block {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--paper);
+    }
+
+    .plain-block h4 {
+      margin: 0 0 8px;
+      font-family: Bahnschrift, "Microsoft YaHei UI", sans-serif;
+      font-size: 15px;
+    }
+
+    .plain-block p,
+    .plain-block ul {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .plain-block ul {
+      padding-left: 20px;
+    }
+
+    .plain-block li + li {
+      margin-top: 5px;
+    }
+
+    .path-list {
+      display: grid;
+      gap: 10px;
+      margin: 16px 0 0;
+    }
+
+    .path-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-width: 0;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--paper);
+    }
+
+    .path-item code {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      color: #344340;
+      font-size: 12px;
+    }
+
+    .inline-copy {
+      width: 38px;
+      height: 34px;
+      flex: none;
+      border: 1px solid var(--line-strong);
+      border-radius: 4px;
+      background: #f8faf9;
+      color: var(--ink);
+      cursor: pointer;
+    }
+
+    .inline-copy:hover {
+      background: #edf2f1;
+    }
+
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      padding-top: 28px;
+      border-top: 1px solid var(--line-strong);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .footer p {
+      margin: 0;
+    }
+
+    .toast {
+      position: fixed;
+      right: 22px;
+      bottom: 22px;
+      z-index: 100;
+      max-width: min(360px, calc(100vw - 44px));
+      padding: 12px 16px;
+      border: 1px solid #1e4f41;
+      border-radius: 4px;
+      background: #173b32;
+      color: #ffffff;
+      box-shadow: var(--shadow);
+      font-size: 13px;
+      opacity: 0;
+      transform: translateY(8px);
+      pointer-events: none;
+      transition: opacity 150ms ease, transform 150ms ease;
+    }
+
+    .toast[data-visible="true"] {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @media (max-width: 900px) {
+      .shell {
+        display: block;
+      }
+
+      .sidebar {
+        position: static;
+        height: auto;
+        padding: 16px;
+        overflow: visible;
+      }
+
+      .brand {
+        padding-bottom: 14px;
+      }
+
+      .side-label,
+      .side-footer {
+        display: none;
+      }
+
+      .side-nav {
+        grid-template-columns: repeat(4, minmax(150px, 1fr));
+        margin-top: 14px;
+        overflow-x: auto;
+        padding-bottom: 2px;
+      }
+
+      .side-nav button {
+        min-width: 150px;
+      }
+
+      .topbar {
+        position: static;
+      }
+
+      .facts,
+      .two-column {
+        grid-template-columns: 1fr;
+      }
+
+      .fact {
+        min-height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .fact:last-child {
+        border-bottom: 0;
+      }
+    }
+
+    @media (max-width: 640px) {
+      body {
+        font-size: 16px;
+      }
+
+      .topbar {
+        align-items: flex-start;
+        padding: 12px 16px;
+      }
+
+      .topbar-title span {
+        display: block;
+      }
+
+      .action-button {
+        width: 42px;
+        min-width: 42px;
+        padding: 0;
+        font-size: 0;
+      }
+
+      .action-button::first-letter {
+        font-size: 16px;
+      }
+
+      .content {
+        padding: 28px 16px 52px;
+      }
+
+      h1 {
+        font-size: 30px;
+      }
+
+      .intro-copy {
+        font-size: 16px;
+      }
+
+      .mode-switcher {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .mode-switcher button:nth-child(2) {
+        border-right: 0;
+      }
+
+      .mode-switcher button:nth-child(-n + 2) {
+        border-bottom: 1px solid var(--line);
+      }
+
+      .view-heading {
+        grid-template-columns: 1fr;
+        align-items: start;
+      }
+
+      .view-tag {
+        justify-self: start;
+      }
+
+      .step {
+        grid-template-columns: 42px minmax(0, 1fr);
+        gap: 10px;
+      }
+
+      .step-number {
+        width: 34px;
+        height: 34px;
+      }
+
+      .check-row {
+        grid-template-columns: 26px minmax(0, 1fr);
+      }
+
+      .check-note {
+        grid-column: 2;
+        white-space: normal;
+      }
+
+      .matrix-wrap {
+        overflow-x: auto;
+      }
+
+      .matrix {
+        min-width: 680px;
+      }
+
+      .footer {
+        display: grid;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+
+    @media print {
+      body {
+        background: #ffffff;
+        color: #000000;
+        font-size: 11pt;
+      }
+
+      .shell {
+        display: block;
+      }
+
+      .sidebar,
+      .topbar,
+      .mode-switcher,
+      .copy-button,
+      .inline-copy,
+      .toast {
+        display: none !important;
+      }
+
+      .content {
+        width: 100%;
+        padding: 0;
+      }
+
+      .guide-view[hidden] {
+        display: block !important;
+      }
+
+      .guide-view {
+        break-before: page;
+      }
+
+      .guide-view:first-of-type {
+        break-before: auto;
+      }
+
+      .command {
+        box-shadow: none;
+      }
+
+      a {
+        color: #000000;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar" aria-label="使用流程导航">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">CF</div>
+        <div>
+          <p class="brand-name">CodexFast Windows</p>
+          <p class="brand-caption">独立 runtime launcher 使用手册</p>
+        </div>
+      </div>
+
+      <p class="side-label">操作模式</p>
+      <nav class="side-nav">
+        <button type="button" data-view-target="setup" aria-current="page">
+          <span class="nav-index">01</span><span>首次配置</span>
+        </button>
+        <button type="button" data-view-target="daily">
+          <span class="nav-index">02</span><span>日常启动</span>
+        </button>
+        <button type="button" data-view-target="update">
+          <span class="nav-index">03</span><span>更新后检查</span>
+        </button>
+        <button type="button" data-view-target="recovery">
+          <span class="nav-index">04</span><span>退出与回滚</span>
+        </button>
+      </nav>
+
+      <div class="side-footer">
+        Launcher 日志
+        <code>logs\launcher.log</code>
+        <code>logs\launcher.previous.log</code>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-title">
+          最佳实践 <span>普通权限 · 会话内补丁 · Fail Closed</span>
+        </div>
+        <div class="topbar-actions">
+          <button class="action-button" id="reset-checklist" type="button" title="重置勾选进度">↺ 重置</button>
+          <button class="action-button" id="print-guide" type="button" title="打印或导出 PDF">⎙ 打印</button>
+        </div>
+      </header>
+
+      <div class="content">
+        <section class="intro" aria-labelledby="page-title">
+          <p class="eyebrow">Operator guide / Windows 10 &amp; 11 x64</p>
+          <h1 id="page-title">用快捷方式启动，用只读检查应对更新。</h1>
+          <p class="intro-copy">
+            推荐入口是桌面 <strong>CodexFast</strong> 快捷方式和通知区域托盘。它不会重新安装 Codex，
+            不会修改 MSIX、<code>app.asar</code> 或 Provider；后台 launcher 必须在 Codex 使用期间保持运行。
+          </p>
+
+          <div class="facts" aria-label="关键事实">
+            <div class="fact">
+              <div class="fact-label">权限</div>
+              <div class="fact-value">普通用户运行<br>不请求 UAC</div>
+            </div>
+            <div class="fact">
+              <div class="fact-label">推荐入口</div>
+              <div class="fact-value">桌面快捷方式<br>隐藏 PowerShell + 托盘</div>
+            </div>
+            <div class="fact">
+              <div class="fact-label">Provider</div>
+              <div class="fact-value"><code>127.0.0.1:8317/v1</code><br>保持用户现有配置</div>
+            </div>
+          </div>
+
+          <div class="mode-switcher" role="tablist" aria-label="选择使用场景">
+            <button type="button" role="tab" aria-selected="true" data-view-target="setup">首次配置</button>
+            <button type="button" role="tab" aria-selected="false" data-view-target="daily">日常启动</button>
+            <button type="button" role="tab" aria-selected="false" data-view-target="update">Codex 更新后</button>
+            <button type="button" role="tab" aria-selected="false" data-view-target="recovery">故障与回滚</button>
+          </div>
+        </section>
+
+        <section class="guide-view" id="view-setup" data-view="setup" role="tabpanel">
+          <div class="view-heading">
+            <div>
+              <h2>首次配置</h2>
+              <p>只需完成一次。安装依赖、构建生成 CLI、执行静态检查，然后安装桌面快捷方式。</p>
+            </div>
+            <span class="view-tag">约 3-5 分钟</span>
+          </div>
+
+          <div class="section">
+            <h3>前置条件</h3>
+            <div class="two-column">
+              <div class="plain-block">
+                <h4>需要</h4>
+                <ul>
+                  <li>Node.js 18.12 或更高版本</li>
+                  <li>当前用户已安装官方 Codex MSIX</li>
+                  <li>项目源码位于固定目录</li>
+                </ul>
+              </div>
+              <div class="plain-block">
+                <h4>不要做</h4>
+                <ul>
+                  <li>不要使用管理员 PowerShell</li>
+                  <li>不要运行 <code>npx codexfast</code></li>
+                  <li>不要修改 WindowsApps 或 <code>config.toml</code></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3>安装、构建并检查</h3>
+            <p>在项目目录打开普通 PowerShell。以下命令不会启动或关闭 Codex。</p>
+            <div class="command">
+              <div class="command-head">
+                <span>PowerShell · 首次构建</span>
+                <button class="copy-button" type="button" data-copy-target="cmd-setup" title="复制命令" aria-label="复制首次构建命令">⧉</button>
+              </div>
+              <pre id="cmd-setup">cd D:\path\to\codexfast-windows
+
+corepack pnpm install --frozen-lockfile
+corepack pnpm build
+node .\bin\codexfast inspect</pre>
+            </div>
+
+            <div class="callout">
+              <div class="callout-bar"></div>
+              <div class="callout-body">
+                <p class="callout-title">通过标准</p>
+                <p class="callout-copy">输出包含 <code>Compatibility inspection completed without launching Codex.</code></p>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3>安装桌面快捷方式</h3>
+            <p>快捷方式会隐藏可见 PowerShell 窗口，并用托盘图标维持后台 patch session。</p>
+            <div class="command">
+              <div class="command-head">
+                <span>PowerShell · 安装或刷新快捷方式</span>
+                <button class="copy-button" type="button" data-copy-target="cmd-shortcut" title="复制命令" aria-label="复制快捷方式安装命令">⧉</button>
+              </div>
+              <pre id="cmd-shortcut">powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\install-windows-shortcut.ps1</pre>
+            </div>
+            <p>项目移动到其他目录后，从新目录重新执行一次安装命令。</p>
+          </div>
+        </section>
+
+        <section class="guide-view" id="view-daily" data-view="daily" role="tabpanel" hidden>
+          <div class="view-heading">
+            <div>
+              <h2>日常启动</h2>
+              <p>先启动 8317 代理，再完全退出旧 Codex，最后通过桌面快捷方式启动新会话。</p>
+            </div>
+            <span class="view-tag">推荐日常流程</span>
+          </div>
+
+          <div class="section">
+            <h3>启动前检查清单</h3>
+            <div class="checklist" aria-label="日常启动检查清单">
+              <div class="check-row">
+                <input type="checkbox" id="check-proxy" data-persist-check>
+                <label for="check-proxy">本地代理 <code>127.0.0.1:8317</code> 已启动</label>
+                <span class="check-note">请求入口</span>
+              </div>
+              <div class="check-row">
+                <input type="checkbox" id="check-quit" data-persist-check>
+                <label for="check-quit">旧 Codex Desktop 已完全退出</label>
+                <span class="check-note">不能有旧 MSIX 进程</span>
+              </div>
+              <div class="check-row">
+                <input type="checkbox" id="check-shortcut" data-persist-check>
+                <label for="check-shortcut">从桌面 <strong>CodexFast</strong> 快捷方式启动</label>
+                <span class="check-note">普通权限</span>
+              </div>
+              <div class="check-row">
+                <input type="checkbox" id="check-tray" data-persist-check>
+                <label for="check-tray">通知区域中的 CodexFast 托盘保持运行</label>
+                <span class="check-note">维持 CDP patch</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3>推荐顺序</h3>
+            <div class="steps">
+              <div class="step">
+                <div class="step-number">01</div>
+                <div><h4>启动代理</h4><p>先确认 8317 服务可用。codexfast 不会替你启动或修改 Provider。</p></div>
+              </div>
+              <div class="step">
+                <div class="step-number">02</div>
+                <div><h4>完全退出原 Codex</h4><p>退出所有 Codex Desktop 窗口和托盘实例。Codex CLI 进程不属于 MSIX 时不会阻止启动。</p></div>
+              </div>
+              <div class="step">
+                <div class="step-number">03</div>
+                <div><h4>双击 CodexFast</h4><p>不需要保留可见终端，但隐藏的托盘、PowerShell 和 Node 后台进程必须继续运行。</p></div>
+              </div>
+              <div class="step">
+                <div class="step-number">04</div>
+                <div><h4>选择模型和速度</h4><p>选择 Sol、Terra 或 Luna，并通过 Settings、<code>/fast</code> 或 Intelligence Speed 切换 Fast。</p></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3>模型与 Fast 预期</h3>
+            <div class="matrix-wrap">
+              <table class="matrix">
+                <thead><tr><th>模型</th><th>Max</th><th>Ultra</th><th>Fast 请求</th></tr></thead>
+                <tbody>
+                  <tr><td><code>gpt-5.6-sol</code></td><td>支持</td><td>支持</td><td><code>service_tier: "priority"</code></td></tr>
+                  <tr><td><code>gpt-5.6-terra</code></td><td>支持</td><td>支持</td><td><code>service_tier: "priority"</code></td></tr>
+                  <tr><td><code>gpt-5.6-luna</code></td><td>支持</td><td>不应出现</td><td><code>service_tier: "priority"</code></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="callout" data-tone="amber">
+              <div class="callout-bar"></div>
+              <div class="callout-body">
+                <p class="callout-title">Fast 不等于服务端授权</p>
+                <p class="callout-copy">代理仍需接受对应模型 ID 和 <code>service_tier: "priority"</code>，否则可以忽略或拒绝请求。</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3>需要可见终端时</h3>
+            <p>排查启动输出时，可以不用快捷方式，直接运行下面的命令。该 PowerShell 窗口必须保持打开。</p>
+            <div class="command">
+              <div class="command-head">
+                <span>PowerShell · 前台启动</span>
+                <button class="copy-button" type="button" data-copy-target="cmd-launch" title="复制命令" aria-label="复制前台启动命令">⧉</button>
+              </div>
+              <pre id="cmd-launch">node .\bin\codexfast launch</pre>
+            </div>
+          </div>
+        </section>
+
+        <section class="guide-view" id="view-update" data-view="update" role="tabpanel" hidden>
+          <div class="view-heading">
+            <div>
+              <h2>Codex 更新后</h2>
+              <p>不要先强行启动。先运行只读 JSON 检查，再根据 classification 决定是否进入手工验证。</p>
+            </div>
+            <span class="view-tag">更新门禁</span>
+          </div>
+
+          <div class="section">
+            <h3>第一步：只读检查</h3>
+            <p><code>inspect --json</code> 不激活、关闭或重启 Codex，也不会读取 Provider 配置。</p>
+            <div class="command">
+              <div class="command-head">
+                <span>PowerShell · 更新后审计</span>
+                <button class="copy-button" type="button" data-copy-target="cmd-inspect-json" title="复制命令" aria-label="复制更新后检查命令">⧉</button>
+              </div>
+              <pre id="cmd-inspect-json">node .\bin\codexfast inspect --json</pre>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3>如何判断结果</h3>
+            <div class="matrix-wrap">
+              <table class="matrix">
+                <thead><tr><th>结果</th><th>含义</th><th>下一步</th></tr></thead>
+                <tbody>
+                  <tr>
+                    <td><span class="status"><span class="status-dot"></span><code>recorded-static-pass</code></span></td>
+                    <td>已记录版本，8 个静态 target 全部通过。</td>
+                    <td>可以进入独立的真实启动验证。</td>
+                  </tr>
+                  <tr>
+                    <td><span class="status" data-tone="amber"><span class="status-dot"></span><code>unlisted-signature-compatible</code></span></td>
+                    <td>当前用户已注册的新版本尚未记录，但 target pattern 仍兼容。</td>
+                    <td>可以测试，不能直接宣称正式支持。</td>
+                  </tr>
+                  <tr>
+                    <td><span class="status" data-tone="red"><span class="status-dot"></span><code>ok: false</code></span></td>
+                    <td>身份、文件快照或 required target 未通过。</td>
+                    <td>停止，不要绕过门禁，先适配新版本。</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3>第二步：手工验证</h3>
+            <div class="checklist" aria-label="Codex 更新后验证清单">
+              <div class="check-row">
+                <input type="checkbox" id="update-targets" data-persist-check>
+                <label for="update-targets">启动日志报告全部 8 个 required targets</label>
+                <span class="check-note">CDP runtime</span>
+              </div>
+              <div class="check-row">
+                <input type="checkbox" id="update-models" data-persist-check>
+                <label for="update-models">Sol / Terra / Luna 菜单及 reasoning effort 正确</label>
+                <span class="check-note">Luna 无 Ultra</span>
+              </div>
+              <div class="check-row">
+                <input type="checkbox" id="update-fast" data-persist-check>
+                <label for="update-fast">Settings、<code>/fast</code>、Intelligence Speed 状态一致</label>
+                <span class="check-note">Standard / Fast</span>
+              </div>
+              <div class="check-row">
+                <input type="checkbox" id="update-proxy" data-persist-check>
+                <label for="update-proxy">代理日志仍为 8317/v1，并收到正确 model 与 service tier</label>
+                <span class="check-note">Provider 证据</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3>项目源码更新</h3>
+            <p>项目有新提交时，先更新依赖和生成 CLI，再重新安装快捷方式。</p>
+            <div class="command">
+              <div class="command-head">
+                <span>PowerShell · 更新本地项目</span>
+                <button class="copy-button" type="button" data-copy-target="cmd-project-update" title="复制命令" aria-label="复制项目更新命令">⧉</button>
+              </div>
+              <pre id="cmd-project-update">git pull --ff-only
+corepack pnpm install --frozen-lockfile
+corepack pnpm build
+node .\bin\codexfast inspect
+
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\install-windows-shortcut.ps1</pre>
+            </div>
+          </div>
+        </section>
+
+        <section class="guide-view" id="view-recovery" data-view="recovery" role="tabpanel" hidden>
+          <div class="view-heading">
+            <div>
+              <h2>故障、退出与回滚</h2>
+              <p>先退出 Codex，再处理托盘。无需恢复 app.asar 或数字签名，因为 launcher 不会修改它们。</p>
+            </div>
+            <span class="view-tag">安全退出</span>
+          </div>
+
+          <div class="section">
+            <h3>正确退出顺序</h3>
+            <div class="steps">
+              <div class="step">
+                <div class="step-number">01</div>
+                <div><h4>正常退出 Codex Desktop</h4><p>不要先结束 launcher，避免当前会话失去 CDP patch 监控。</p></div>
+              </div>
+              <div class="step">
+                <div class="step-number">02</div>
+                <div><h4>等待 launcher 停止</h4><p>托盘状态变为 Stopped 后，可以保留托盘等待下次使用，也可以退出托盘。</p></div>
+              </div>
+              <div class="step">
+                <div class="step-number">03</div>
+                <div><h4>需要回到原版时</h4><p>从开始菜单正常启动官方 Codex 即可，没有 bundle 备份或签名修复步骤。</p></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3>日志位置</h3>
+            <p>日志保存在项目目录，达到 5 MB 后轮转。</p>
+            <div class="path-list">
+              <div class="path-item"><code>.\logs\launcher.log</code><button class="inline-copy" type="button" data-copy-text=".\logs\launcher.log" title="复制路径" aria-label="复制当前日志路径">⧉</button></div>
+              <div class="path-item"><code>.\logs\launcher.previous.log</code><button class="inline-copy" type="button" data-copy-text=".\logs\launcher.previous.log" title="复制路径" aria-label="复制历史日志路径">⧉</button></div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3>仅在自动发现失败时使用覆盖项</h3>
+            <p>覆盖项不应永久写入系统环境。它们不能为未知或未注册的 MSIX 建立信任。</p>
+            <div class="command">
+              <div class="command-head">
+                <span>PowerShell · 会话级覆盖示例</span>
+                <button class="copy-button" type="button" data-copy-target="cmd-overrides" title="复制命令" aria-label="复制覆盖项示例">⧉</button>
+              </div>
+              <pre id="cmd-overrides">$env:CODEXFAST_APP_BUNDLE = 'C:\Program Files\WindowsApps\OpenAI.Codex_26.707.3748.0_x64__2p2nqsd0c76g0'
+$env:CODEXFAST_APP_EXECUTABLE = 'app\ChatGPT.exe'
+$env:CODEXFAST_APP_USER_MODEL_ID = 'OpenAI.Codex_2p2nqsd0c76g0!App'
+
+node .\bin\codexfast inspect</pre>
+            </div>
+
+            <div class="command">
+              <div class="command-head">
+                <span>PowerShell · 清除覆盖项</span>
+                <button class="copy-button" type="button" data-copy-target="cmd-clear-overrides" title="复制命令" aria-label="复制清除覆盖项命令">⧉</button>
+              </div>
+              <pre id="cmd-clear-overrides">Remove-Item Env:CODEXFAST_APP_BUNDLE -ErrorAction SilentlyContinue
+Remove-Item Env:CODEXFAST_APP_EXECUTABLE -ErrorAction SilentlyContinue
+Remove-Item Env:CODEXFAST_APP_USER_MODEL_ID -ErrorAction SilentlyContinue</pre>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3>停止条件</h3>
+            <div class="callout" data-tone="red">
+              <div class="callout-bar"></div>
+              <div class="callout-body">
+                <p class="callout-title">出现以下情况时不要继续强行启动</p>
+                <p class="callout-copy">静态检查为 <code>ok: false</code>、required target 缺失/重复、MSIX 身份不一致，或 launcher 报告 runtime patch session 已丢失。</p>
+              </div>
+            </div>
+            <div class="two-column">
+              <div class="plain-block">
+                <h4>先查看</h4>
+                <ul>
+                  <li><code>logs\launcher.log</code></li>
+                  <li><code>node .\bin\codexfast inspect --json</code></li>
+                  <li>代理是否监听 8317</li>
+                </ul>
+              </div>
+              <div class="plain-block">
+                <h4>不要尝试</h4>
+                <ul>
+                  <li>不要修改或替换 <code>app.asar</code></li>
+                  <li>不要重签名或重打包 MSIX</li>
+                  <li>不要通过永久覆盖项绕过身份检查</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <footer class="footer">
+          <p>CodexFast Windows · 独立项目，不是 OpenAI 官方产品。</p>
+          <p><a href="../README.windows.md">完整 Windows README</a> · <a href="real-app-validation.md">真实应用验证清单</a></p>
+        </footer>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite">已复制</div>
+
+  <script>
+    (() => {
+      const storagePrefix = "codexfast-guide:";
+      const views = Array.from(document.querySelectorAll("[data-view]"));
+      const viewButtons = Array.from(document.querySelectorAll("[data-view-target]"));
+      const toast = document.getElementById("toast");
+      let toastTimer = 0;
+
+      function showToast(message) {
+        toast.textContent = message;
+        toast.dataset.visible = "true";
+        window.clearTimeout(toastTimer);
+        toastTimer = window.setTimeout(() => {
+          toast.dataset.visible = "false";
+        }, 1600);
+      }
+
+      function activateView(viewName, updateHistory = true) {
+        const valid = views.some((view) => view.dataset.view === viewName);
+        const nextView = valid ? viewName : "setup";
+
+        views.forEach((view) => {
+          view.hidden = view.dataset.view !== nextView;
+        });
+
+        viewButtons.forEach((button) => {
+          const active = button.dataset.viewTarget === nextView;
+          if (button.getAttribute("role") === "tab") {
+            button.setAttribute("aria-selected", String(active));
+          } else if (active) {
+            button.setAttribute("aria-current", "page");
+          } else {
+            button.removeAttribute("aria-current");
+          }
+        });
+
+        localStorage.setItem(storagePrefix + "view", nextView);
+        if (updateHistory) {
+          history.replaceState(null, "", "#" + nextView);
+        }
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+
+      async function copyText(text) {
+        try {
+          if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+          } else {
+            const textarea = document.createElement("textarea");
+            textarea.value = text;
+            textarea.setAttribute("readonly", "");
+            textarea.style.position = "fixed";
+            textarea.style.opacity = "0";
+            document.body.appendChild(textarea);
+            textarea.select();
+            const copied = document.execCommand("copy");
+            textarea.remove();
+            if (!copied) throw new Error("copy command failed");
+          }
+          showToast("已复制到剪贴板");
+        } catch {
+          showToast("复制失败，请手动选择命令");
+        }
+      }
+
+      viewButtons.forEach((button) => {
+        button.addEventListener("click", () => activateView(button.dataset.viewTarget));
+      });
+
+      document.querySelectorAll("[data-copy-target]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const target = document.getElementById(button.dataset.copyTarget);
+          if (target) copyText(target.textContent.trim());
+        });
+      });
+
+      document.querySelectorAll("[data-copy-text]").forEach((button) => {
+        button.addEventListener("click", () => copyText(button.dataset.copyText));
+      });
+
+      document.querySelectorAll("[data-persist-check]").forEach((checkbox) => {
+        const key = storagePrefix + "check:" + checkbox.id;
+        checkbox.checked = localStorage.getItem(key) === "true";
+        checkbox.addEventListener("change", () => {
+          localStorage.setItem(key, String(checkbox.checked));
+        });
+      });
+
+      document.getElementById("reset-checklist").addEventListener("click", () => {
+        document.querySelectorAll("[data-persist-check]").forEach((checkbox) => {
+          checkbox.checked = false;
+          localStorage.removeItem(storagePrefix + "check:" + checkbox.id);
+        });
+        showToast("勾选进度已重置");
+      });
+
+      document.getElementById("print-guide").addEventListener("click", () => window.print());
+
+      const initialView = location.hash.slice(1) || localStorage.getItem(storagePrefix + "view") || "setup";
+      activateView(initialView, false);
+    })();
+  </script>
+</body>
+</html>

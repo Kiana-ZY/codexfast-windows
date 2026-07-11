@@ -12,6 +12,7 @@ This project follows a simple release-oriented changelog format.
 - Added read-only `codexfast inspect` and signature-gated Windows update adaptation. Unlisted official current-user packages can proceed only when package identity is exact and all eight allowed ASAR targets are globally unique, replacement-verifiable, and dynamically mapped to renderer resources.
 - Added `codexfast inspect --json` with a stable v1 success/failure report for package identity, file snapshots, compatibility source, resource mappings, and all eight target hashes without launching Codex or inspecting Provider configuration.
 - Added a project-owned `codexfast-windows-update-audit` Skill for strictly read-only post-update audits, and aligned the project Skills with the GitHub-only distribution policy.
+- Added an offline interactive Windows best-practices guide with copyable commands, persistent startup/update checklists, and print-friendly recovery instructions.
 
 ### Fixed
 

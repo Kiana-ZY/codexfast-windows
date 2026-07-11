@@ -2,6 +2,8 @@
 
 本文件说明 Windows 10/11 x64 上的 MSIX runtime launcher。Windows 实现默认使用普通用户权限，不请求 UAC，也不会修改已安装的 Codex 包。
 
+需要按场景操作时，可直接双击打开 [`docs/codexfast-windows-best-practices.html`](./docs/codexfast-windows-best-practices.html)。该离线指南提供首次配置、日常启动、更新后检查、退出回滚、命令复制和可持久化检查清单。
+
 当前已检查的基线：
 
 - Package: `OpenAI.Codex`
