@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { finished } from "node:stream/promises";
 
 type FileSnapshot = {
   sha256: string;
@@ -94,7 +95,8 @@ async function createFakeInspectPackage(
     );
   }
   const appAsar = join(resources, "app.asar");
-  await createPackage(asarSource, appAsar);
+  const stream = await createPackage(asarSource, appAsar);
+  await finished(stream);
   return {
     bundle,
     appAsar,
