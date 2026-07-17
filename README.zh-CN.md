@@ -92,6 +92,7 @@ q) Quit
 - macOS `launch` 只允许在白名单里的 version/build 上执行
 - Windows 每次运行都会重新核验当前用户 MSIX 注册、manifest、`AppxSignature.p7x` 文件快照和 8 个精确 ASAR target pattern；未列入版本记录但已注册的版本只能以 `unlisted-signature-compatible` classification 继续，不使用版本通配或长期信任缓存
 - Windows 还要求从预期 renderer origin、资源路径和已检查 body hash 观察全部 6 个 Fast 目标与 2 个模型目标，否则 fail closed
+- CDP 断线后，只有新的 app renderer generation 在需要时 reload、主动预载动态资源，并在 15 秒墙钟期限内重新观察全部必需标签，才会恢复会话；旧连接的迟到响应会被忽略
 - Runtime launch 不会改写 `app.asar`、`Info.plist`、app bundle、备份、app 签名或 macOS 隐私权限
 - 仅 macOS profile 提供自动更新开关；Windows 不启用 updater 补丁
 

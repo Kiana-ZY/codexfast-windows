@@ -81,6 +81,8 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\instal
 - 打开项目目录
 - 在 launcher 已停止时退出托盘
 
+同一项目目录的托盘已经运行时，再次双击快捷方式会向现有托盘发送一次启动请求，不会创建第二个 launcher。不同 clone/项目目录使用各自的 IPC 标识，不会把新目录的启动请求误发给旧目录。
+
 日志保存在项目目录：
 
 ```text
@@ -90,7 +92,7 @@ logs\launcher.previous.log
 
 `launcher.log` 达到 5 MB 后会在下次启动前轮转。托盘仍然需要一个隐藏的 PowerShell/Node 后台进程维持 CDP patch session，但不需要保持可见终端窗口。补丁会话活跃时，`Exit tray` 不会强杀 launcher；应先正常退出 Codex Desktop，等待状态变为 `Stopped`，再退出托盘。
 
-快捷方式的 `ExecutionPolicy Bypass` 只应用于该隐藏 PowerShell 进程，不修改用户或系统的持久执行策略。仓库移动到其他目录后，应从新目录重新运行安装命令。
+日志只写入当前项目目录下的 `logs`，不会写入 `%LOCALAPPDATA%\codexfast`。快捷方式的 `ExecutionPolicy Bypass` 只应用于该隐藏 PowerShell 进程，不修改用户或系统的持久执行策略。安装器会把当时解析到的 `node.exe` 绝对路径写入快捷方式；仓库移动、Node.js 被升级到其他路径，或使用 nvm/fnm 切换并删除旧 Node 后，应从当前项目目录重新运行安装命令。
 
 ## 启动前
 
@@ -235,6 +237,8 @@ Remove-Item Env:CODEXFAST_APP_USER_MODEL_ID -ErrorAction SilentlyContinue
 ## 更新兼容性
 
 Codex 更新后，启动器会动态发现新的 hashed chunk 名；只要官方当前用户注册身份稳定、8 个 target pattern 仍各自唯一且内存替换可复核，就可以进入 `unlisted-signature-compatible` classification。target pattern 变化、目标缺失/重复、manifest 或 `AppxSignature.p7x` 文件快照变化、CDP origin/path/hash 不一致都会 fail closed。先运行 `node .\bin\codexfast inspect`；即使通过，也仍需按上面的手动清单验证 UI、Fast 请求和 `http://127.0.0.1:8317/v1` 路由，完成后才能把该版本记录为真实支持。
+
+运行期间 CDP 断开时，launcher 最多重连 3 次。每次重连都必须重新绑定 `app://` renderer；对已经运行的 renderer 先 reload，再主动预载动态资源，并在新的 connection generation 内重新观察全部 8 个标签。单次观察有 15 秒墙钟上限，旧连接的迟到响应不能满足新一代验证。任一步失败都会关闭本次启动且仍属于 launcher 的 Codex 进程树并非零退出。
 
 ## License
 

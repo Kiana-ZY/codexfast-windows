@@ -10,7 +10,7 @@ Expected behavior:
 - It starts Codex with a local CDP endpoint and applies runtime patches only to that launched session.
 - Keep the `codexfast launch` process running while you use Codex. Settings and Plugins load some chunks lazily, and those later requests still need the runtime interceptor.
 - During initial startup, the launcher connects to the browser-level CDP target, auto-attaches to renderer targets with `waitForDebuggerOnStart`, enables `Fetch` interception in the renderer session, and then lets the renderer continue. If a required target for the current build is still not observed, launch retries one renderer reload and then fails closed instead of repeatedly refreshing the app. Older builds require `Plugins access`; `26.601.21317`, `26.602.30954`, `26.602.40724`, `26.602.71036`, `26.608.12217`, `26.609.30741`, `26.609.41114`, `26.609.71450`, `26.611.61049`, `26.611.61753`, `26.611.62324`, `26.616.31447`, `26.616.51431`, `26.616.71553`, `26.616.81150`, `26.623.31443`, `26.623.31921`, `26.623.42026`, `26.623.61825`, `26.623.70822`, `26.623.81905`, `26.623.101652`, and `26.623.141536` do not require that legacy target because the old sidebar/page/detail gates are absent or Plugins is supported by the official app path.
-- The launcher sends a lightweight browser-level CDP heartbeat. If the runtime patch session drops, it reconnects at most three times and re-enables browser auto-attach. If reconnects are exhausted, it reports `Runtime patch session lost`, closes the launched Codex process, and exits non-zero so Codex does not keep running without runtime patching.
+- The launcher sends a lightweight browser-level CDP heartbeat. If the runtime patch session drops, it reconnects at most three times, re-enables browser auto-attach, reloads an already-running app renderer when needed, preloads the dynamic resources, and requires every target again within a 15-second wall-clock observation window. Old-generation Fetch callbacks are ignored. If reconnects are exhausted, it reports `Runtime patch session lost`, closes the launched Codex process, and exits non-zero so Codex does not keep running without runtime patching.
 - It does not modify `app.asar`, `Info.plist`, the app bundle, the app signature, backups, or macOS privacy permissions.
 - It removes the legacy launchd auto-repair watcher if an older codexfast version installed one.
 
@@ -19,6 +19,13 @@ If launch is blocked:
 1. Fully quit any running `Codex.app` instance.
 2. Re-run `node ./bin/codexfast launch`.
 3. Use the detected version/build printed by launch when recording an unsupported build for adaptation.
+
+If the Windows desktop shortcut or tray does not start the expected clone:
+
+1. Read `logs\launcher.log` under that clone. The tray does not write to `%LOCALAPPDATA%\codexfast`.
+2. Re-run `scripts\install-windows-shortcut.ps1` after moving the clone or changing Node.js to a different executable path. The shortcut intentionally stores the absolute `node.exe` path resolved during installation.
+3. A second invocation for the same clone signals the existing tray instead of creating another launcher. Different clone paths have different mutex/event identities; if an old tray remains, exit it after its launcher reaches `Stopped`.
+4. No administrator PowerShell is required. A missing Node path or unresponsive tray is reported instead of triggering UAC.
 
 If Settings Fast or Plugins content is still missing after launch:
 
@@ -57,6 +64,7 @@ If launch reports `Runtime patch session lost after 3 reconnect attempts`:
 1. Fully quit Codex and confirm no `Codex` main process remains.
 2. Re-run `node ./bin/codexfast launch`.
 3. Do not keep using any remaining Codex window as proof of runtime patch behavior; reconnects were exhausted, so codexfast deliberately closed the launched process instead of allowing an unpatched session to continue.
+4. Check the preceding reconnect-attempt line. Missing renderer binding, missing required labels, response origin/path/hash mismatches, CDP command timeouts, and the 15-second reconnect observation deadline are all fail-closed causes.
 
 If Codex shows `Codex failed to start` with `ERR_FAILED` while runtime launch is being tested:
 

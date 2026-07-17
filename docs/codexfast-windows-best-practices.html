@@ -1047,7 +1047,7 @@
           <div class="view-heading">
             <div>
               <h2>首次配置</h2>
-              <p>只需完成一次。安装依赖、构建生成 CLI、执行静态检查，然后安装桌面快捷方式。</p>
+              <p>首次配置通常只做一次；项目目录或 Node.js 可执行路径变化后，需要刷新桌面快捷方式。</p>
             </div>
             <span class="view-tag">约 3-5 分钟</span>
           </div>
@@ -1109,7 +1109,7 @@ node .\bin\codexfast inspect</pre>
               <pre id="cmd-shortcut">powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\install-windows-shortcut.ps1</pre>
             </div>
-            <p>项目移动到其他目录后，从新目录重新执行一次安装命令。</p>
+            <p>安装器会记录当前 <code>node.exe</code> 的绝对路径。项目移动、Node.js 升级到其他路径，或 nvm/fnm 删除旧版本后，都要从当前目录重新执行安装命令。</p>
           </div>
         </section>
 
@@ -1161,7 +1161,7 @@ node .\bin\codexfast inspect</pre>
               </div>
               <div class="step">
                 <div class="step-number">03</div>
-                <div><h4>双击 CodexFast</h4><p>不需要保留可见终端，但隐藏的托盘、PowerShell 和 Node 后台进程必须继续运行。</p></div>
+                <div><h4>双击 CodexFast</h4><p>不需要保留可见终端，但隐藏的托盘、PowerShell 和 Node 后台进程必须继续运行。同一项目的托盘已存在时，再次双击只向它发送一次启动请求；不同项目目录彼此隔离。</p></div>
               </div>
               <div class="step">
                 <div class="step-number">04</div>

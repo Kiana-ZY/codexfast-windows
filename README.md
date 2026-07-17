@@ -99,6 +99,7 @@ The script matches code signatures in frontend build output, so it can break aft
 - macOS `launch` is blocked unless the installed version/build is whitelisted
 - Windows rechecks the registered MSIX identity, manifest, `AppxSignature.p7x` file snapshot, and the eight exact ASAR target patterns on every run. Unlisted registered builds proceed only with source `signature-compatible-update` and classification `unlisted-signature-compatible`; no long-term trust cache or version wildcard is used
 - Windows additionally fails closed unless all six Fast targets and both model targets are observed from the expected renderer origin, resource path, and inspected body hash before the response is released
+- A dropped CDP session is recovered only after a new app renderer generation reloads when needed, preloads the dynamic resources, and re-observes every required label within a 15-second wall-clock window; stale responses from the old connection are ignored
 - Runtime launch does not rewrite `app.asar`, `Info.plist`, the app bundle, backups, the app signature, or macOS privacy permissions
 - On macOS only, the automatic-update switch disables later background update checks and forced automatic install scheduling during the current `codexfast launch` session; Windows does not enable updater patches
 

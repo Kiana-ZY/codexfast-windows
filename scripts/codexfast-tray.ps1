@@ -2,7 +2,12 @@
 param(
   [switch]$SelfTest,
   [switch]$NoAutoStart,
-  [switch]$SmokeTest
+  [switch]$SmokeTest,
+  [string]$NodePath = '',
+  [string]$TestInstanceKey = '',
+  [string]$TestStartRecordPath = '',
+  [string]$TestReadyRecordPath = '',
+  [ValidateRange(100, 10000)][int]$SmokeTestDurationMs = 800
 )
 
 Set-StrictMode -Version Latest
@@ -13,7 +18,12 @@ $script:CliPath = Join-Path $script:ProjectRoot 'bin\codexfast'
 $script:LogDirectory = Join-Path $script:ProjectRoot 'logs'
 $script:LogPath = Join-Path $script:LogDirectory 'launcher.log'
 $script:PreviousLogPath = Join-Path $script:LogDirectory 'launcher.previous.log'
-$script:NodePath = (Get-Command node.exe -ErrorAction Stop).Source
+$script:NodePath = $NodePath
+$script:PowerShellPath = (
+  Get-Command powershell.exe -CommandType Application -ErrorAction Stop
+).Source
+$script:TestStartRecordPath = $TestStartRecordPath
+$script:TestReadyRecordPath = $TestReadyRecordPath
 $script:LauncherProcess = $null
 $script:SessionLogOffset = 0L
 $script:ReadyNotified = $false
@@ -25,24 +35,62 @@ $script:Timer = $null
 $script:SmokeTimer = $null
 $script:ApplicationContext = $null
 $script:Mutex = $null
+$script:StartRequestEvent = $null
+$script:StartRequestAckEvent = $null
 $script:OwnedIcon = $null
 
-function Quote-CmdArgument {
-  param([Parameter(Mandatory = $true)][string]$Value)
+function Resolve-TrayNodePath {
+  param([string]$ConfiguredPath)
 
-  return '"' + $Value.Replace('"', '""') + '"'
+  if ($ConfiguredPath) {
+    if (-not [System.IO.Path]::IsPathRooted($ConfiguredPath)) {
+      throw "Configured Node.js path must be absolute: $ConfiguredPath"
+    }
+    if (-not (Test-Path -LiteralPath $ConfiguredPath -PathType Leaf)) {
+      throw @"
+Configured Node.js executable is unavailable:
+$ConfiguredPath
+
+Re-run scripts\install-windows-shortcut.ps1 after installing or updating Node.js.
+"@
+    }
+    return (Get-Item -LiteralPath $ConfiguredPath).FullName
+  }
+
+  try {
+    $command = Get-Command node.exe -CommandType Application -ErrorAction Stop
+    return $command.Source
+  } catch {
+    throw @"
+Node.js was not found for the hidden tray process.
+
+Install Node.js 18.12 or newer, then re-run scripts\install-windows-shortcut.ps1.
+"@
+  }
 }
 
-function Get-LauncherCommandLine {
-  param(
-    [Parameter(Mandatory = $true)][string]$Command,
-    [Parameter(Mandatory = $true)][string]$LogPath
-  )
+function Get-TrayInstanceKey {
+  if ($TestInstanceKey) {
+    if ($TestInstanceKey -notmatch '^[A-Za-z0-9_-]+$') {
+      throw "Invalid test tray instance key: $TestInstanceKey"
+    }
+    return $TestInstanceKey
+  }
+  if ($SmokeTest) {
+    return "SmokeTest-$PID"
+  }
 
-  $node = Quote-CmdArgument $script:NodePath
-  $cli = Quote-CmdArgument $script:CliPath
-  $log = Quote-CmdArgument $LogPath
-  return "$node $cli $Command >> $log 2>&1"
+  $normalizedRoot = [System.IO.Path]::GetFullPath($script:ProjectRoot).TrimEnd(
+    [System.IO.Path]::DirectorySeparatorChar
+  ).ToUpperInvariant()
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($normalizedRoot)
+    $hash = $sha256.ComputeHash($bytes)
+    return ([System.BitConverter]::ToString($hash) -replace '-', '').Substring(0, 20)
+  } finally {
+    $sha256.Dispose()
+  }
 }
 
 function New-LauncherProcessStartInfo {
@@ -51,13 +99,23 @@ function New-LauncherProcessStartInfo {
     [Parameter(Mandatory = $true)][string]$LogPath
   )
 
-  $commandLine = Get-LauncherCommandLine -Command $Command -LogPath $LogPath
   $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-  $startInfo.FileName = $env:ComSpec
-  $startInfo.Arguments = '/d /s /c "' + $commandLine + '"'
+  $startInfo.FileName = $script:PowerShellPath
+  $startInfo.Arguments = @(
+    '-NoLogo'
+    '-NoProfile'
+    '-NonInteractive'
+    '-WindowStyle Hidden'
+    '-Command'
+    '"& $env:CODEXFAST_TRAY_NODE $env:CODEXFAST_TRAY_CLI $env:CODEXFAST_TRAY_COMMAND 2>&1 | Out-File -LiteralPath $env:CODEXFAST_TRAY_LOG -Append -Encoding utf8; exit $LASTEXITCODE"'
+  ) -join ' '
   $startInfo.WorkingDirectory = $script:ProjectRoot
   $startInfo.UseShellExecute = $false
   $startInfo.CreateNoWindow = $true
+  $startInfo.EnvironmentVariables['CODEXFAST_TRAY_NODE'] = $script:NodePath
+  $startInfo.EnvironmentVariables['CODEXFAST_TRAY_CLI'] = $script:CliPath
+  $startInfo.EnvironmentVariables['CODEXFAST_TRAY_COMMAND'] = $Command
+  $startInfo.EnvironmentVariables['CODEXFAST_TRAY_LOG'] = $LogPath
   return $startInfo
 }
 
@@ -264,15 +322,42 @@ function Complete-LauncherProcess {
   Show-LauncherError "CodexFast exited with code $exitCode.`n`n$tail"
 }
 
+function Handle-TrayStartRequest {
+  if ($script:TestStartRecordPath) {
+    Add-Content -LiteralPath $script:TestStartRecordPath -Encoding UTF8 -Value 'start'
+    return
+  }
+  if ($null -ne $script:LauncherProcess) {
+    if (-not $script:LauncherProcess.HasExited) {
+      Show-TrayNotification `
+        -Title 'CodexFast is already running' `
+        -Message 'The existing runtime launcher is still active.'
+      return
+    }
+    Complete-LauncherProcess
+  }
+
+  Start-CodexFastLauncher
+}
+
 function Update-LauncherStatus {
+  if (
+    $script:StartRequestEvent -and
+    $script:StartRequestEvent.WaitOne(0)
+  ) {
+    if ($script:StartRequestAckEvent) {
+      [void]$script:StartRequestAckEvent.Set()
+    }
+    Handle-TrayStartRequest
+  }
+
   if ($null -eq $script:LauncherProcess) {
     return
   }
 
-  $sessionLog = Get-CurrentSessionLog
   if (
     -not $script:ReadyNotified -and
-    $sessionLog.Contains('Runtime launch completed.')
+    (Get-CurrentSessionLog).Contains('Runtime launch completed.')
   ) {
     $script:ReadyNotified = $true
     Set-TrayStatus 'Active'
@@ -288,7 +373,7 @@ function Open-LauncherLog {
   if (-not (Test-Path -LiteralPath $script:LogPath -PathType Leaf)) {
     New-Item -ItemType File -Path $script:LogPath -Force | Out-Null
   }
-  Start-Process -FilePath 'notepad.exe' -ArgumentList @($script:LogPath)
+  Invoke-Item -LiteralPath $script:LogPath
 }
 
 function Request-TrayExit {
@@ -337,25 +422,45 @@ function Start-TrayApplication {
   Add-Type -AssemblyName System.Drawing
   [System.Windows.Forms.Application]::EnableVisualStyles()
 
+  $instanceKey = Get-TrayInstanceKey
+  $startRequestEventName = "Local\CodexFastTrayStartRequest-$instanceKey"
+  $startRequestAckEventName = "Local\CodexFastTrayStartRequestAck-$instanceKey"
+  $mutexName = "Local\CodexFastTray-$instanceKey"
+  $script:StartRequestEvent = New-Object System.Threading.EventWaitHandle(
+    $false,
+    [System.Threading.EventResetMode]::AutoReset,
+    $startRequestEventName
+  )
+  $script:StartRequestAckEvent = New-Object System.Threading.EventWaitHandle(
+    $false,
+    [System.Threading.EventResetMode]::AutoReset,
+    $startRequestAckEventName
+  )
+
   $createdNew = $false
-  $mutexName = if ($SmokeTest) {
-    "Local\CodexFastTraySmokeTest-$PID"
-  } else {
-    'Local\CodexFastTray'
-  }
   $script:Mutex = New-Object System.Threading.Mutex(
     $true,
     $mutexName,
     [ref]$createdNew
   )
   if (-not $createdNew) {
-    [void][System.Windows.Forms.MessageBox]::Show(
-      'CodexFast tray is already running.',
-      'CodexFast Launcher',
-      [System.Windows.Forms.MessageBoxButtons]::OK,
-      [System.Windows.Forms.MessageBoxIcon]::Information
-    )
-    return
+    [void]$script:StartRequestEvent.Set()
+    if ($script:StartRequestAckEvent.WaitOne(2000)) {
+      return
+    }
+
+    $acquiredAfterExit = $false
+    try {
+      $acquiredAfterExit = $script:Mutex.WaitOne(500)
+    } catch [System.Threading.AbandonedMutexException] {
+      $acquiredAfterExit = $true
+    }
+    if (-not $acquiredAfterExit) {
+      throw 'An existing CodexFast tray did not acknowledge the start request. Wait a moment and try again.'
+    }
+  }
+  if ($script:TestReadyRecordPath) {
+    Set-Content -LiteralPath $script:TestReadyRecordPath -Encoding UTF8 -Value 'ready'
   }
 
   $script:ApplicationContext = New-Object System.Windows.Forms.ApplicationContext
@@ -384,7 +489,7 @@ function Start-TrayApplication {
   $script:StartItem.Add_Click({ Start-CodexFastLauncher })
   $viewLogItem.Add_Click({ Open-LauncherLog })
   $openProjectItem.Add_Click({
-    Start-Process -FilePath 'explorer.exe' -ArgumentList @($script:ProjectRoot)
+    Invoke-Item -LiteralPath $script:ProjectRoot
   })
   $exitItem.Add_Click({ Request-TrayExit })
   $script:NotifyIcon.Add_DoubleClick({ Open-LauncherLog })
@@ -399,7 +504,7 @@ function Start-TrayApplication {
   }
   if ($SmokeTest) {
     $script:SmokeTimer = New-Object System.Windows.Forms.Timer
-    $script:SmokeTimer.Interval = 800
+    $script:SmokeTimer.Interval = $SmokeTestDurationMs
     $script:SmokeTimer.Add_Tick({
       $script:SmokeTimer.Stop()
       $script:NotifyIcon.Visible = $false
@@ -414,19 +519,31 @@ function Start-TrayApplication {
 }
 
 if ($SelfTest) {
-  Invoke-TraySelfTest
-  exit 0
+  try {
+    $script:NodePath = Resolve-TrayNodePath -ConfiguredPath $script:NodePath
+    Invoke-TraySelfTest
+    exit 0
+  } catch {
+    [Console]::Error.WriteLine($_.Exception.ToString())
+    exit 1
+  }
 }
 
 try {
+  $script:NodePath = Resolve-TrayNodePath -ConfiguredPath $script:NodePath
   Start-TrayApplication
 } catch {
+  $fatalError = $_
   try {
     Ensure-LogDirectory
     Add-Content -LiteralPath $script:LogPath -Encoding UTF8 -Value `
-      "Tray fatal error: $($_.Exception.ToString())"
+      "Tray fatal error: $($fatalError.Exception.ToString())"
+  } catch {
+    # The tray has no console; preserve the original failure for the dialog.
+  }
+  try {
     Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
-    Show-LauncherError $_.Exception.Message
+    Show-LauncherError $fatalError.Exception.Message
   } catch {
     # The tray has no console; avoid masking the original failure.
   }
@@ -450,5 +567,11 @@ try {
   if ($script:Mutex) {
     try { $script:Mutex.ReleaseMutex() } catch {}
     $script:Mutex.Dispose()
+  }
+  if ($script:StartRequestEvent) {
+    $script:StartRequestEvent.Dispose()
+  }
+  if ($script:StartRequestAckEvent) {
+    $script:StartRequestAckEvent.Dispose()
   }
 }

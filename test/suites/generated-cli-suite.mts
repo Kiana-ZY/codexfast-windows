@@ -7,6 +7,18 @@ export function runGeneratedCliSuite(rootDir: string): void {
   const generatedCli = readFileSync(join(rootDir, "bin", "codexfast"), "utf8");
   assertContains(generatedCli, 'const MIN_NODE_VERSION = "18.12.0";', "expected generated CLI to enforce Node.js 18.12.0 or later");
   assertContains(generatedCli, "runtimePatchReconnectMaxAttempts = 3", "expected generated CLI to bound runtime launch reconnect attempts");
+  assertContains(generatedCli, "runtimePatchBrowserConnectTimeoutMs = 15_000", "expected generated CLI to preserve the bounded cold-start connection window");
+  assertContains(generatedCli, "reconnectObservationTimeoutMs", "expected generated CLI to enforce a wall-clock reconnect observation deadline");
+  assertContains(generatedCli, "reconnectConnectController?.abort()", "expected generated CLI to cancel a pending reconnect during shutdown");
+  assertContains(generatedCli, "runtimeRendererOriginFromLocation", "expected generated CLI to resolve an empty target URL from the renderer before reload");
+  assertContains(generatedCli, "globalThis.location?.href ?? ''", "expected generated CLI to query the pending renderer location without mutating it");
+  assertContains(generatedCli, "!attached.waitingForDebugger && targetOrigin", "expected generated CLI to reload only location-confirmed existing app renderers");
+  assertContains(generatedCli, "beginInitialResourcePreload", "expected generated CLI to preload after a pending renderer binds late to an app origin");
+  assertContains(generatedCli, "reconnectObservationTasks", "expected generated CLI shutdown to drain reconnect observation tasks");
+  assertContains(generatedCli, "initialPreloadHandlers", "expected generated CLI shutdown to drain initial preload handlers");
+  assertContains(generatedCli, "drainReconnectObservationTasks", "expected generated CLI shutdown to wait for every reconnect observation task");
+  assertContains(generatedCli, "Promise.allSettled", "expected generated CLI shutdown not to stop draining after the first rejected handler");
+  assertContains(generatedCli, "await session.close()", "expected generated CLI to await runtime-session cleanup before exit");
   assertContains(generatedCli, '"Browser.getVersion"', "expected generated CLI to heartbeat the browser-level CDP runtime patch session");
   assertContains(generatedCli, '"Target.setAutoAttach"', "expected generated CLI to auto-attach before renderer JavaScript runs");
   assertContains(generatedCli, "waitForDebuggerOnStart: true", "expected generated CLI to pause new renderer targets before JavaScript runs");
