@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createPackage } from "@electron/asar";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { finished } from "node:stream/promises";
+import { createFinishedAsar } from "../helpers/create-finished-asar.mts";
 import { CdpConnection } from "../../src/cli-cdp.mts";
 import { ReadOnlyAsarArchive } from "../../src/cli-asar.mts";
 import { createCodexfastContext } from "../../src/cli-context.mts";
@@ -268,9 +268,7 @@ async function createAdaptiveAsar(
     writeFileSync(join(assets, resource), bodies.join(" "), "utf8");
   }
   const appAsar = join(bundle, "app", "resources", "app.asar");
-  rmSync(appAsar, { force: true });
-  const stream = await createPackage(source, appAsar);
-  await finished(stream);
+  await createFinishedAsar(source, appAsar);
   return appAsar;
 }
 
@@ -393,13 +391,32 @@ class FakeRuntimeCdp {
     body: string;
   }> | null = null;
   private failedMethods = new Map<string, Error>();
+  private hungMethods = new Set<string>();
+  private hungMethodRejectors = new Set<(error: Error) => void>();
+  private hungMethodCloseDelayMs = 0;
   private targetUrl = "app://-/index.html";
+  private runtimeLocationHref: string | null = null;
+  private attachedTargetUrls = new Map<string, string>();
+  private targetWaitingForDebugger = true;
+  private targetAttachments: Array<{
+    sessionId: string;
+    url: string;
+    waitingForDebugger: boolean;
+  }> | null = null;
   private emitTargetOnAutoAttach = true;
   private emitResponsesOnResume = false;
+  private emitResponsesOnReload = true;
   closed = false;
+  closeCount = 0;
   runtimeEvaluateContextFailuresRemaining = 0;
+  runtimeLocationEvaluateCount = 0;
   runtimeEvaluateExpressions: string[] = [];
   sentMethods: string[] = [];
+  sentCommands: Array<{
+    method: string;
+    params: unknown;
+    sessionId?: string;
+  }> = [];
 
   setResponseFixtures(fixtures: Array<{
     requestId: string;
@@ -413,8 +430,32 @@ class FakeRuntimeCdp {
     this.failedMethods.set(method, error);
   }
 
+  hangMethod(method: string): void {
+    this.hungMethods.add(method);
+  }
+
+  setHungMethodCloseDelay(delayMs: number): void {
+    this.hungMethodCloseDelayMs = delayMs;
+  }
+
   setTargetUrl(url: string): void {
     this.targetUrl = url;
+  }
+
+  setTargetWaitingForDebugger(waitingForDebugger: boolean): void {
+    this.targetWaitingForDebugger = waitingForDebugger;
+  }
+
+  setRuntimeLocationHref(url: string): void {
+    this.runtimeLocationHref = url;
+  }
+
+  setTargetAttachments(attachments: Array<{
+    sessionId: string;
+    url: string;
+    waitingForDebugger: boolean;
+  }>): void {
+    this.targetAttachments = attachments;
   }
 
   setAutoAttachTargetEnabled(enabled: boolean): void {
@@ -423,6 +464,10 @@ class FakeRuntimeCdp {
 
   setEmitResponsesOnResume(enabled: boolean): void {
     this.emitResponsesOnResume = enabled;
+  }
+
+  setEmitResponsesOnReload(enabled: boolean): void {
+    this.emitResponsesOnReload = enabled;
   }
 
   private async emitConfiguredResponses(sessionId: string): Promise<void> {
@@ -470,6 +515,37 @@ class FakeRuntimeCdp {
     }
   }
 
+  async emitResponses(sessionId = "page-session"): Promise<void> {
+    await this.emitConfiguredResponses(sessionId);
+  }
+
+  async emitResponse(
+    requestId: string,
+    url: string,
+    body: string,
+    sessionId = "page-session",
+  ): Promise<void> {
+    this.responseBodies.set(requestId, body);
+    await this.emit("Fetch.requestPaused", {
+      requestId,
+      request: { url },
+      responseStatusCode: 200,
+    }, sessionId);
+  }
+
+  async emitAttachedTarget(
+    sessionId: string,
+    url: string,
+    waitingForDebugger: boolean,
+  ): Promise<void> {
+    this.attachedTargetUrls.set(sessionId, url);
+    await this.emit("Target.attachedToTarget", {
+      sessionId,
+      targetInfo: { type: "page", url },
+      waitingForDebugger,
+    });
+  }
+
   asConnection(): CdpConnection {
     return this as unknown as CdpConnection;
   }
@@ -480,21 +556,46 @@ class FakeRuntimeCdp {
     sessionId?: string,
   ): Promise<T> {
     this.sentMethods.push(method);
+    this.sentCommands.push({ method, params, sessionId });
     const methodFailure = this.failedMethods.get(method);
     if (methodFailure) {
       throw methodFailure;
     }
+    if (this.hungMethods.has(method)) {
+      return await new Promise<T>((_resolve, reject) => {
+        this.hungMethodRejectors.add(reject);
+      });
+    }
     if (method === "Target.setAutoAttach" && this.emitTargetOnAutoAttach) {
       queueMicrotask(() => {
-        void this.emit("Target.attachedToTarget", {
+        const attachments = this.targetAttachments ?? [{
           sessionId: "page-session",
-          targetInfo: { type: "page", url: this.targetUrl },
-          waitingForDebugger: true,
-        });
+          url: this.targetUrl,
+          waitingForDebugger: this.targetWaitingForDebugger,
+        }];
+        void (async () => {
+          for (const attachment of attachments) {
+            await this.emitAttachedTarget(
+              attachment.sessionId,
+              attachment.url,
+              attachment.waitingForDebugger,
+            );
+          }
+        })();
       });
     }
     if (method === "Runtime.evaluate") {
       const expression = (params as { expression?: string })?.expression ?? "";
+      if (expression.includes("globalThis.location")) {
+        this.runtimeLocationEvaluateCount += 1;
+        return {
+          result: {
+            value: this.runtimeLocationHref ??
+              this.attachedTargetUrls.get(sessionId ?? "") ??
+              this.targetUrl,
+          },
+        } as T;
+      }
       this.runtimeEvaluateExpressions.push(expression);
       if (this.runtimeEvaluateContextFailuresRemaining > 0) {
         this.runtimeEvaluateContextFailuresRemaining -= 1;
@@ -515,10 +616,14 @@ class FakeRuntimeCdp {
       !this.preloadEventsScheduled
     ) {
       this.preloadEventsScheduled = true;
-      await this.emitConfiguredResponses(sessionId ?? "page-session");
+      queueMicrotask(() => {
+        void this.emitConfiguredResponses(sessionId ?? "page-session");
+      });
     }
-    if (method === "Page.reload") {
-      await this.emitConfiguredResponses(sessionId ?? "page-session");
+    if (method === "Page.reload" && this.emitResponsesOnReload) {
+      queueMicrotask(() => {
+        void this.emitConfiguredResponses(sessionId ?? "page-session");
+      });
     }
     if (method === "Fetch.getResponseBody") {
       const requestId = (params as { requestId?: string })?.requestId;
@@ -540,6 +645,21 @@ class FakeRuntimeCdp {
 
   close(): void {
     this.closed = true;
+    this.closeCount += 1;
+    const rejectors = [...this.hungMethodRejectors];
+    this.hungMethodRejectors.clear();
+    if (this.hungMethodCloseDelayMs > 0) {
+      rejectors.forEach((reject, index) => {
+        setTimeout(
+          () => reject(new Error("CDP WebSocket connection closed.")),
+          this.hungMethodCloseDelayMs * (index + 1),
+        );
+      });
+    } else {
+      for (const reject of rejectors) {
+        reject(new Error("CDP WebSocket connection closed."));
+      }
+    }
   }
 
   isClosed(): boolean {
@@ -579,6 +699,73 @@ async function withoutConsoleOutput<T>(action: () => Promise<T>): Promise<T> {
   } finally {
     console.log = originalLog;
   }
+}
+
+async function withCapturedConsoleOutput<T>(
+  action: () => Promise<T>,
+): Promise<{ value: T; output: string }> {
+  const originalLog = console.log;
+  const lines: string[] = [];
+  console.log = (...values: unknown[]) => {
+    lines.push(values.map(String).join(" "));
+  };
+  try {
+    return { value: await action(), output: lines.join("\n") };
+  } finally {
+    console.log = originalLog;
+  }
+}
+
+async function waitForCondition(
+  condition: () => boolean,
+  message: string,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) {
+      return;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(message);
+}
+
+async function promiseRemainsPending(
+  promise: Promise<unknown>,
+  durationMs = 25,
+): Promise<boolean> {
+  return await Promise.race([
+    promise.then(
+      () => false,
+      () => false,
+    ),
+    new Promise<boolean>((resolve) =>
+      setTimeout(() => resolve(true), durationMs)
+    ),
+  ]);
+}
+
+async function collectSpawnedProcess(
+  child: ReturnType<typeof spawn>,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  child.stdout?.on("data", (chunk: Buffer | string) => {
+    stdout.push(Buffer.from(chunk));
+  });
+  child.stderr?.on("data", (chunk: Buffer | string) => {
+    stderr.push(Buffer.from(chunk));
+  });
+  const code = await new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  return {
+    code,
+    stdout: Buffer.concat(stdout).toString("utf8"),
+    stderr: Buffer.concat(stderr).toString("utf8"),
+  };
 }
 
 async function testRuntimeFailureTerminatesLaunchedProcess(): Promise<void> {
@@ -693,6 +880,7 @@ async function testRuntimeDisconnectTerminatesLaunchedProcess(): Promise<void> {
   const context = windowsRuntimeContext();
   let terminateCalls = 0;
   let closeCalls = 0;
+  const cleanupOrder: string[] = [];
   const exitCode = await withoutConsoleOutput(() =>
     runRuntimeLaunch({
       context,
@@ -707,6 +895,7 @@ async function testRuntimeDisconnectTerminatesLaunchedProcess(): Promise<void> {
           waitForExit: () => new Promise<number>(() => undefined),
           terminateTree: () => {
             terminateCalls += 1;
+            cleanupOrder.push("terminate");
           },
         }),
       },
@@ -714,6 +903,7 @@ async function testRuntimeDisconnectTerminatesLaunchedProcess(): Promise<void> {
         patchedLabels: [...runtimePatchWindowsRequiredInitialLabels],
         close: () => {
           closeCalls += 1;
+          cleanupOrder.push("close");
         },
         lost: Promise.resolve(
           new Error(
@@ -728,6 +918,58 @@ async function testRuntimeDisconnectTerminatesLaunchedProcess(): Promise<void> {
   assert.equal(exitCode, 1);
   assert.equal(terminateCalls, 1);
   assert.equal(closeCalls, 1);
+  assert.deepEqual(cleanupOrder, ["terminate", "close"]);
+}
+
+async function testNormalProcessExitAwaitsSessionClose(): Promise<void> {
+  const context = windowsRuntimeContext();
+  let terminateCalls = 0;
+  let closeStarted = false;
+  let releaseClose = (): void => undefined;
+  const closeGate = new Promise<void>((resolve) => {
+    releaseClose = resolve;
+  });
+  const launchPromise = withoutConsoleOutput(() =>
+    runRuntimeLaunch({
+      context,
+      patcherSource: filteredPatcherFixtureSource(),
+      supportedAppVersionKeys: context.metadata.versionKey,
+      printActionHeader: () => undefined,
+      removeLegacyWatcherFiles: () => true,
+      platformOperations: {
+        checkRunning: () => ({ ok: true, running: false }),
+        launch: () => ({
+          pid: 52_525,
+          waitForExit: async () => 0,
+          terminateTree: () => {
+            terminateCalls += 1;
+          },
+        }),
+      },
+      runtimePatchSessionStarter: async () => ({
+        patchedLabels: [...runtimePatchWindowsRequiredInitialLabels],
+        close: async () => {
+          closeStarted = true;
+          await closeGate;
+        },
+        lost: new Promise<Error>(() => undefined),
+      }),
+      debugPortFactory: () => 45_703,
+      windowsCompatibilityVerifier: () => undefined,
+    })
+  );
+  await waitForCondition(
+    () => closeStarted,
+    "timed out waiting for runtime session close",
+  );
+  assert.equal(
+    await promiseRemainsPending(launchPromise),
+    true,
+    "expected launch completion to wait for asynchronous session cleanup",
+  );
+  releaseClose();
+  assert.equal(await launchPromise, 0);
+  assert.equal(terminateCalls, 0);
 }
 
 async function testReconnectLoopExhaustion(): Promise<void> {
@@ -834,7 +1076,7 @@ async function testReconnectSetupFailureIsFailClosed(): Promise<void> {
       lost.message,
       /Runtime patch session lost after 3 reconnect attempts: simulated reconnect retry failure 4/,
     );
-    session.close();
+    await session.close();
   });
 }
 
@@ -870,7 +1112,7 @@ async function testReconnectWithoutRendererIsFailClosed(): Promise<void> {
       lost.message,
       /Runtime patch session lost after 3 reconnect attempts: CDP reconnected without a renderer bound to an app origin/,
     );
-    session.close();
+    await session.close();
   });
 }
 
@@ -906,7 +1148,7 @@ async function testReconnectWithUnboundPendingRendererIsFailClosed(): Promise<vo
       lost.message,
       /Runtime patch session lost after 3 reconnect attempts: CDP reconnected without a renderer bound to an app origin/,
     );
-    session.close();
+    await session.close();
   });
 }
 
@@ -971,8 +1213,376 @@ async function testReconnectRequiresAllPatchLabels(): Promise<void> {
       lost.message,
       /Runtime patch session lost after 3 reconnect attempts: CDP reconnected without observing required targets: GPT-5\.6 model query selector/,
     );
-    session.close();
+    await session.close();
   });
+}
+
+async function testReconnectPreloadsAllResourcesAndSucceeds(): Promise<void> {
+  await withoutConsoleOutput(async () => {
+    const initialCdp = new FakeRuntimeCdp();
+    const reconnectCdp = new FakeRuntimeCdp();
+    reconnectCdp.setTargetWaitingForDebugger(false);
+    let connectCalls = 0;
+    const resourcePaths = runtimePatchInitialResourcePathsForContext(
+      windowsRuntimeContext(),
+    );
+    const session = await startRuntimePatchSession(
+      45_697,
+      runtimePatcherSourceForWindows(filteredPatcherFixtureSource()),
+      runtimePatchWindowsRequiredInitialLabels,
+      resourcePaths,
+      [],
+      {
+        connect: async () => {
+          connectCalls += 1;
+          return connectCalls === 1
+            ? initialCdp.asConnection()
+            : reconnectCdp.asConnection();
+        },
+        sleep: async () => undefined,
+        reconnectObservationTimeoutMs: 250,
+      },
+    );
+
+    initialCdp.triggerEventError(new Error("simulated disconnect"));
+    await waitForCondition(
+      () => reconnectCdp.runtimeEvaluateExpressions.length > 0,
+      "timed out waiting for reconnect preload",
+    );
+    await waitForCondition(
+      () =>
+        reconnectCdp.sentMethods.filter((method) =>
+          method === "Fetch.fulfillRequest"
+        ).length >= 6,
+      "timed out waiting for reconnect patch fulfillment",
+    );
+    assert.equal(connectCalls, 2);
+    assert.equal(reconnectCdp.closed, false);
+    assert.equal(
+      await promiseRemainsPending(session.lost),
+      true,
+      "expected a fully observed reconnect to keep the session active",
+    );
+    const preloadExpression = reconnectCdp.runtimeEvaluateExpressions.at(-1) ??
+      "";
+    const reloadIndex = reconnectCdp.sentMethods.indexOf("Page.reload");
+    const preloadIndex = reconnectCdp.sentMethods.indexOf("Runtime.evaluate");
+    assert.ok(reloadIndex >= 0, "expected an existing renderer to reload");
+    assert.ok(
+      reloadIndex < preloadIndex,
+      "expected the existing renderer to reload before lazy-resource preload",
+    );
+    for (const resourcePath of resourcePaths) {
+      assert.match(
+        preloadExpression,
+        new RegExp(resourcePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      );
+    }
+    await session.close();
+  });
+}
+
+async function testStaleFetchHandlersCannotCloseReconnectedSession(): Promise<void> {
+  await withoutConsoleOutput(async () => {
+    const initialCdp = new FakeRuntimeCdp();
+    const reconnectCdp = new FakeRuntimeCdp();
+    let connectCalls = 0;
+    const session = await startRuntimePatchSession(
+      45_698,
+      runtimePatcherSourceForWindows(filteredPatcherFixtureSource()),
+      runtimePatchWindowsRequiredInitialLabels,
+      runtimePatchInitialResourcePathsForContext(windowsRuntimeContext()),
+      [],
+      {
+        connect: async () => {
+          connectCalls += 1;
+          return connectCalls === 1
+            ? initialCdp.asConnection()
+            : reconnectCdp.asConnection();
+        },
+        sleep: async () => undefined,
+        reconnectObservationTimeoutMs: 250,
+      },
+    );
+
+    initialCdp.triggerEventError(new Error("simulated disconnect"));
+    await waitForCondition(
+      () =>
+        reconnectCdp.sentMethods.filter((method) =>
+          method === "Fetch.fulfillRequest"
+        ).length >= 6,
+      "timed out waiting for successful reconnect",
+    );
+    assert.equal(connectCalls, 2);
+    assert.equal(
+      await promiseRemainsPending(session.lost),
+      true,
+      "expected reconnect verification to complete successfully",
+    );
+    initialCdp.setResponseFixtures([{
+      requestId: "stale-response",
+      url: "https://example.com/assets/stale.js",
+      body: "model-list-needle MODEL_LIST_DISABLED",
+    }]);
+    await initialCdp.emitResponses("page-session");
+    assert.equal(
+      await promiseRemainsPending(session.lost),
+      true,
+      "expected an old-generation response not to fail the new session",
+    );
+    assert.equal(reconnectCdp.closed, false);
+    await session.close();
+  });
+}
+
+async function testCloseWaitsForLateReconnectConnection(): Promise<void> {
+  await withoutConsoleOutput(async () => {
+    const initialCdp = new FakeRuntimeCdp();
+    const lateCdp = new FakeRuntimeCdp();
+    let connectCalls = 0;
+    let reconnectResolverSet = false;
+    let resolveReconnect = (_connection: CdpConnection): void => {
+      throw new Error("reconnect resolver was not initialized");
+    };
+    const session = await startRuntimePatchSession(
+      45_699,
+      runtimePatcherSourceForWindows(filteredPatcherFixtureSource()),
+      runtimePatchWindowsRequiredInitialLabels,
+      runtimePatchInitialResourcePathsForContext(windowsRuntimeContext()),
+      [],
+      {
+        connect: async () => {
+          connectCalls += 1;
+          if (connectCalls === 1) {
+            return initialCdp.asConnection();
+          }
+          return await new Promise<CdpConnection>((resolve) => {
+            reconnectResolverSet = true;
+            resolveReconnect = resolve;
+          });
+        },
+        sleep: async () => undefined,
+        connectTimeoutMs: 250,
+      },
+    );
+    initialCdp.triggerEventError(new Error("simulated disconnect"));
+    await waitForCondition(
+      () => connectCalls === 2,
+      "timed out waiting for delayed reconnect",
+    );
+    const closePromise = Promise.resolve(session.close());
+    assert.equal(
+      await promiseRemainsPending(closePromise),
+      true,
+      "expected close to wait until the pending connection is drained",
+    );
+    assert.equal(reconnectResolverSet, true);
+    resolveReconnect(lateCdp.asConnection());
+    await closePromise;
+    assert.equal(lateCdp.closeCount, 1);
+    assert.deepEqual(lateCdp.sentMethods, []);
+    assert.equal(
+      await promiseRemainsPending(session.lost),
+      true,
+      "normal close must not report a lost runtime session",
+    );
+  });
+}
+
+async function testCloseDrainsInFlightFetchHandler(): Promise<void> {
+  await withoutConsoleOutput(async () => {
+    const cdp = new FakeRuntimeCdp();
+    const session = await startRuntimePatchSession(
+      45_704,
+      runtimePatcherSourceForWindows(filteredPatcherFixtureSource()),
+      runtimePatchWindowsRequiredInitialLabels,
+      runtimePatchInitialResourcePathsForContext(windowsRuntimeContext()),
+      [],
+      {
+        connect: async () => cdp.asConnection(),
+        sleep: async () => undefined,
+        commandTimeoutMs: 1_000,
+      },
+    );
+    cdp.hangMethod("Fetch.getResponseBody");
+    cdp.setHungMethodCloseDelay(25);
+    const getBodyCalls = cdp.sentMethods.filter((method) =>
+      method === "Fetch.getResponseBody"
+    ).length;
+    const inFlightResponses = [
+      cdp.emitResponse(
+        "in-flight-close-1",
+        "app://-/assets/in-flight-close-1.js",
+        "console.log('in flight 1')",
+      ),
+      cdp.emitResponse(
+        "in-flight-close-2",
+        "app://-/assets/in-flight-close-2.js",
+        "console.log('in flight 2')",
+      ),
+    ];
+    await waitForCondition(
+      () =>
+        cdp.sentMethods.filter((method) =>
+          method === "Fetch.getResponseBody"
+        ).length >= getBodyCalls + 2,
+      "timed out waiting for both in-flight Fetch handlers",
+    );
+    const startedAt = Date.now();
+    await session.close();
+    const elapsedMs = Date.now() - startedAt;
+    await Promise.all(inFlightResponses);
+    assert.ok(
+      elapsedMs >= 40,
+      `expected close to drain both delayed Fetch handlers, got ${elapsedMs}ms`,
+    );
+  });
+}
+
+async function testInitialConnectionTimeoutCancelsConnect(): Promise<void> {
+  let aborted = false;
+  await assert.rejects(
+    startRuntimePatchSession(
+      45_700,
+      runtimePatcherSourceForWindows(filteredPatcherFixtureSource()),
+      runtimePatchWindowsRequiredInitialLabels,
+      runtimePatchInitialResourcePathsForContext(windowsRuntimeContext()),
+      [],
+      {
+        connect: async (_port, signal) =>
+          await new Promise<CdpConnection>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => {
+              aborted = true;
+              reject(new Error("cancelled test connection"));
+            }, { once: true });
+          }),
+        connectTimeoutMs: 15,
+      },
+    ),
+    /Timed out waiting for the CDP browser connection/,
+  );
+  assert.equal(aborted, true);
+}
+
+async function testHungRuntimeCommandsFailClosed(): Promise<void> {
+  for (const method of [
+    "Fetch.getResponseBody",
+    "Fetch.fulfillRequest",
+    "Runtime.evaluate",
+  ]) {
+    await withoutConsoleOutput(async () => {
+      const cdp = new FakeRuntimeCdp();
+      cdp.hangMethod(method);
+      await assert.rejects(
+        startRuntimePatchSession(
+          45_701,
+          runtimePatcherSourceForWindows(filteredPatcherFixtureSource()),
+          runtimePatchWindowsRequiredInitialLabels,
+          runtimePatchInitialResourcePathsForContext(windowsRuntimeContext()),
+          [],
+          {
+            connect: async () => cdp.asConnection(),
+            sleep: async () => undefined,
+            commandTimeoutMs: 15,
+          },
+        ),
+        /Timed out waiting for CDP|Failed to (?:read|preload) runtime/,
+      );
+      assert.equal(cdp.closed, true, `${method} must close the CDP session`);
+      if (method !== "Runtime.evaluate") {
+        assert.equal(
+          cdp.sentMethods.includes("Fetch.continueRequest"),
+          false,
+          `${method} must not continue an unverified response`,
+        );
+      }
+    });
+  }
+}
+
+async function testReconnectObservationUsesWallClockDeadline(): Promise<void> {
+  await withoutConsoleOutput(async () => {
+    const initialCdp = new FakeRuntimeCdp();
+    const reconnectCdps = Array.from({ length: 3 }, () => {
+      const cdp = new FakeRuntimeCdp();
+      cdp.hangMethod("Runtime.evaluate");
+      return cdp;
+    });
+    let connectCalls = 0;
+    const session = await startRuntimePatchSession(
+      45_702,
+      runtimePatcherSourceForWindows(filteredPatcherFixtureSource()),
+      runtimePatchWindowsRequiredInitialLabels,
+      runtimePatchInitialResourcePathsForContext(windowsRuntimeContext()),
+      [],
+      {
+        connect: async () => {
+          connectCalls += 1;
+          return connectCalls === 1
+            ? initialCdp.asConnection()
+            : reconnectCdps[connectCalls - 2].asConnection();
+        },
+        sleep: async () => undefined,
+        commandTimeoutMs: 1_000,
+        reconnectObservationTimeoutMs: 20,
+      },
+    );
+    const startedAt = Date.now();
+    initialCdp.triggerEventError(new Error("simulated disconnect"));
+    const lost = await session.lost;
+    const elapsedMs = Date.now() - startedAt;
+    assert.equal(connectCalls, 4);
+    assert.ok(
+      elapsedMs < 500,
+      `expected reconnect observation deadline under 500ms, got ${elapsedMs}ms`,
+    );
+    assert.match(
+      lost.message,
+      /Timed out after 20ms while observing the reconnected renderer/,
+    );
+    await session.close();
+  });
+}
+
+async function testReconnectTargetHashMismatchIsFailClosed(): Promise<void> {
+  const profile = adaptiveCdpProfile();
+  const initialCdp = new FakeRuntimeCdp();
+  initialCdp.setResponseFixtures(profile.responses);
+  const reconnectCdp = new FakeRuntimeCdp();
+  reconnectCdp.setResponseFixtures(profile.responses.map((response, index) =>
+    index === 0 ? { ...response, body: `${response.body} ` } : response
+  ));
+  let connectCalls = 0;
+  const { value: lost, output } = await withCapturedConsoleOutput(async () => {
+    const session = await startRuntimePatchSession(
+      45_705,
+      profile.patcherSource,
+      runtimePatchWindowsRequiredInitialLabels,
+      profile.resourcePaths,
+      profile.targets,
+      {
+        connect: async () => {
+          connectCalls += 1;
+          return connectCalls === 1
+            ? initialCdp.asConnection()
+            : reconnectCdp.asConnection();
+        },
+        sleep: async () => undefined,
+        reconnectObservationTimeoutMs: 250,
+      },
+    );
+    initialCdp.triggerEventError(new Error("simulated disconnect"));
+    const sessionLost = await session.lost;
+    await session.close();
+    return sessionLost;
+  });
+  assert.equal(connectCalls, 2);
+  assert.match(
+    lost.message,
+    /Runtime target Speed setting was observed from unexpected renderer origin app:\/\/-[,]? resource assets\/general-settings-NEW123\.js or body hash/,
+  );
+  assert.doesNotMatch(output, /Runtime patch session reconnected\./);
+  assert.equal(reconnectCdp.closed, true);
 }
 
 async function testMissingRequiredPatchLabelIsFailClosed(): Promise<void> {
@@ -1044,7 +1654,7 @@ async function testRuntimeTargetPathAndHashBinding(): Promise<void> {
       [...session.patchedLabels].sort(),
       [...runtimePatchWindowsRequiredInitialLabels].sort(),
     );
-    session.close();
+    await session.close();
 
     const wrongPathCdp = new FakeRuntimeCdp();
     wrongPathCdp.setResponseFixtures(profile.responses.map((response, index) =>
@@ -1109,6 +1719,48 @@ async function testRuntimeTargetPathAndHashBinding(): Promise<void> {
   });
 }
 
+async function testLatePendingRendererBindingStillPreloads(): Promise<void> {
+  await withoutConsoleOutput(async () => {
+    const cdp = new FakeRuntimeCdp();
+    cdp.setTargetUrl("");
+    cdp.setTargetWaitingForDebugger(false);
+    cdp.setEmitResponsesOnReload(false);
+    let rendererOriginWaits = 0;
+    const sessionPromise = startRuntimePatchSession(
+      45_706,
+      runtimePatcherSourceForWindows(filteredPatcherFixtureSource()),
+      runtimePatchWindowsRequiredInitialLabels,
+      runtimePatchInitialResourcePathsForContext(windowsRuntimeContext()),
+      [],
+      {
+        connect: async () => cdp.asConnection(),
+        sleep: async (milliseconds) => {
+          if (milliseconds === 50) {
+            rendererOriginWaits += 1;
+          }
+        },
+      },
+    );
+    await waitForCondition(
+      () => rendererOriginWaits >= 99,
+      "timed out waiting for the pending renderer origin window to expire",
+    );
+    assert.equal(cdp.runtimeEvaluateExpressions.length, 0);
+    await cdp.emitResponse(
+      "late-app-binding",
+      "app://-/assets/late-app-binding.js",
+      "console.log('late app binding')",
+    );
+    const session = await sessionPromise;
+    assert.deepEqual(
+      [...session.patchedLabels].sort(),
+      [...runtimePatchWindowsRequiredInitialLabels].sort(),
+    );
+    assert.equal(cdp.runtimeEvaluateExpressions.length, 1);
+    await session.close();
+  });
+}
+
 async function testPendingAppRendererOriginBinding(): Promise<void> {
   const profile = adaptiveCdpProfile();
   await withoutConsoleOutput(async () => {
@@ -1160,7 +1812,7 @@ async function testPendingAppRendererOriginBinding(): Promise<void> {
       firstResponseIndex < preloadIndex,
       "expected app-origin binding before runtime resource preload",
     );
-    session.close();
+    await session.close();
 
     const nonAppResponseCdp = new FakeRuntimeCdp();
     nonAppResponseCdp.setTargetUrl("");
@@ -1215,24 +1867,134 @@ async function testPendingAppRendererOriginBinding(): Promise<void> {
   });
 }
 
-async function testNonAppRendererIsRejected(): Promise<void> {
+async function testNonAppRendererIsIgnoredForLaterAppRenderer(): Promise<void> {
   await withoutConsoleOutput(async () => {
     const cdp = new FakeRuntimeCdp();
-    cdp.setTargetUrl("https://example.com/index.html");
-    await assert.rejects(
-      startRuntimePatchSession(
-        45_688,
-        runtimePatcherSourceForWindows(filteredPatcherFixtureSource()),
-        runtimePatchWindowsRequiredInitialLabels,
-        runtimePatchInitialResourcePathsForContext(windowsRuntimeContext()),
-        [],
-        {
-          connect: async () => cdp.asConnection(),
-          sleep: async () => undefined,
-        },
-      ),
-      /Refusing non-app renderer target https:\/\/example\.com\/index\.html/,
+    cdp.setTargetAttachments([
+      {
+        sessionId: "non-app-page",
+        url: "https://example.com/index.html",
+        waitingForDebugger: true,
+      },
+      {
+        sessionId: "page-session",
+        url: "app://-/index.html",
+        waitingForDebugger: true,
+      },
+    ]);
+    const session = await startRuntimePatchSession(
+      45_688,
+      runtimePatcherSourceForWindows(filteredPatcherFixtureSource()),
+      runtimePatchWindowsRequiredInitialLabels,
+      runtimePatchInitialResourcePathsForContext(windowsRuntimeContext()),
+      [],
+      {
+        connect: async () => cdp.asConnection(),
+        sleep: async () => undefined,
+      },
     );
+    assert.deepEqual(
+      [...session.patchedLabels].sort(),
+      [...runtimePatchWindowsRequiredInitialLabels].sort(),
+    );
+    assert.ok(
+      cdp.sentCommands.some((command) =>
+        command.method === "Runtime.runIfWaitingForDebugger" &&
+        command.sessionId === "non-app-page"
+      ),
+      "expected the ignored non-app target to be resumed",
+    );
+    assert.ok(
+      !cdp.sentCommands.some((command) =>
+        command.method === "Fetch.enable" &&
+        command.sessionId === "non-app-page"
+      ),
+      "expected no interception to be installed on a non-app target",
+    );
+    await session.close();
+  });
+}
+
+async function testEmptyUnpausedRendererAllowsLaterAppRenderer(): Promise<void> {
+  await withoutConsoleOutput(async () => {
+    const cdp = new FakeRuntimeCdp();
+    cdp.setEmitResponsesOnReload(false);
+    cdp.setTargetAttachments([
+      {
+        sessionId: "pending-page",
+        url: "",
+        waitingForDebugger: false,
+      },
+      {
+        sessionId: "page-session",
+        url: "app://-/index.html",
+        waitingForDebugger: true,
+      },
+    ]);
+    const session = await startRuntimePatchSession(
+      45_696,
+      runtimePatcherSourceForWindows(filteredPatcherFixtureSource()),
+      runtimePatchWindowsRequiredInitialLabels,
+      runtimePatchInitialResourcePathsForContext(windowsRuntimeContext()),
+      [],
+      {
+        connect: async () => cdp.asConnection(),
+        sleep: async () => undefined,
+      },
+    );
+    assert.deepEqual(
+      [...session.patchedLabels].sort(),
+      [...runtimePatchWindowsRequiredInitialLabels].sort(),
+    );
+    assert.ok(
+      !cdp.sentCommands.some((command) =>
+        command.method === "Page.reload" &&
+        command.sessionId === "pending-page"
+      ),
+      "expected an empty pending renderer not to reload before app-origin binding",
+    );
+    assert.ok(
+      cdp.sentCommands.some((command) =>
+        command.method === "Runtime.evaluate" &&
+        command.sessionId === "page-session"
+      ),
+      "expected the later app renderer to own runtime resource preload",
+    );
+    await session.close();
+  });
+}
+
+async function testEmptyUnpausedRendererResolvesLocationAndReloads(): Promise<void> {
+  await withoutConsoleOutput(async () => {
+    const cdp = new FakeRuntimeCdp();
+    cdp.setTargetUrl("");
+    cdp.setTargetWaitingForDebugger(false);
+    cdp.setRuntimeLocationHref("app://-/index.html");
+    const session = await startRuntimePatchSession(
+      45_707,
+      runtimePatcherSourceForWindows(filteredPatcherFixtureSource()),
+      runtimePatchWindowsRequiredInitialLabels,
+      runtimePatchInitialResourcePathsForContext(windowsRuntimeContext()),
+      [],
+      {
+        connect: async () => cdp.asConnection(),
+        sleep: async () => undefined,
+      },
+    );
+    assert.deepEqual(
+      [...session.patchedLabels].sort(),
+      [...runtimePatchWindowsRequiredInitialLabels].sort(),
+    );
+    assert.equal(cdp.runtimeLocationEvaluateCount, 1);
+    assert.ok(
+      cdp.sentCommands.some((command) =>
+        command.method === "Page.reload" &&
+        command.sessionId === "page-session"
+      ),
+      "expected a location-confirmed pending renderer to reload",
+    );
+    assert.equal(cdp.runtimeEvaluateExpressions.length, 1);
+    await session.close();
   });
 }
 
@@ -2030,6 +2792,30 @@ function testWindowsEnvironmentOverrides(manifestXml: string): void {
     assert.equal(context.metadata.packageRegistrationVerified, false);
     assert.match(context.metadata.compatibility, /explicit AUMID override/);
 
+    const injectedContext = createCodexfastContext("", "win32");
+    withWindowsAppOverridesCleared(() =>
+      loadWindowsAppEnvironment(
+        injectedContext,
+        {
+          "OpenAI.Codex+26.707.3748.0": "test-supported",
+        },
+        () => commandResult(0, "[]"),
+        {
+          ...process.env,
+          CODEXFAST_APP_BUNDLE: bundle,
+          CODEXFAST_APP_EXECUTABLE: join("app", "ChatGPT.exe"),
+          CODEXFAST_APP_USER_MODEL_ID:
+            "OpenAI.Codex_2p2nqsd0c76g0!App",
+        },
+      )
+    );
+    assert.equal(injectedContext.paths.bundle, bundle);
+    assert.equal(injectedContext.paths.executable, executable);
+    assert.equal(
+      injectedContext.metadata.appUserModelId,
+      "OpenAI.Codex_2p2nqsd0c76g0!App",
+    );
+
     const outsideExecutable = join(root, "ChatGPT.exe");
     writeFileSync(outsideExecutable, "outside executable", "utf8");
     process.env.CODEXFAST_APP_EXECUTABLE = outsideExecutable;
@@ -2439,6 +3225,23 @@ export async function runWindowsSuite(rootDir: string): Promise<void> {
     "expected the launched process handle to be held before taskkill",
   );
   assert.match(terminationSource, /Arguments = "\/PID \$processId \/T \/F"/);
+  const traySource = readFileSync(
+    join(rootDir, "scripts", "codexfast-tray.ps1"),
+    "utf8",
+  );
+  assert.match(traySource, /SHA256/);
+  assert.match(traySource, /CodexFastTrayStartRequestAck-/);
+  assert.match(traySource, /CODEXFAST_TRAY_NODE/);
+  assert.doesNotMatch(traySource, /\$env:ComSpec|Get-LauncherCommandLine/);
+  assert.doesNotMatch(traySource, /runas|Verb\s+RunAs/i);
+  const shortcutSource = readFileSync(
+    join(rootDir, "scripts", "install-windows-shortcut.ps1"),
+    "utf8",
+  );
+  assert.match(shortcutSource, /-NodePath/);
+  assert.match(shortcutSource, /temporaryShortcutPath/);
+  assert.match(shortcutSource, /\[System\.IO\.File\]::Replace/);
+  assert.doesNotMatch(shortcutSource, /runas|Verb\s+RunAs/i);
   if (process.platform === "win32") {
     const powershell = resolveWindowsPowerShell();
     assert.ok(powershell, "expected Windows PowerShell to be available");
@@ -2487,6 +3290,121 @@ export async function runWindowsSuite(rootDir: string): Promise<void> {
       traySmokeTest.stderr || traySmokeTest.stdout,
     );
     assert.match(traySmokeTest.stdout, /codexfast tray smoke test passed/);
+
+    const ipcTestRoot = mkdtempSync(join(tmpdir(), "codexfast-tray-ipc-"));
+    try {
+      const instanceKey = `IpcTest-${process.pid}-${Date.now()}`;
+      const readyPath = join(ipcTestRoot, "ready.txt");
+      const startRecordPath = join(ipcTestRoot, "start.txt");
+      const ipcArguments = [
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        join(rootDir, "scripts", "codexfast-tray.ps1"),
+        "-SmokeTest",
+        "-NoAutoStart",
+        "-TestInstanceKey",
+        instanceKey,
+        "-TestStartRecordPath",
+        startRecordPath,
+        "-SmokeTestDurationMs",
+        "2500",
+      ];
+      const primaryTray = spawn(
+        powershell,
+        [...ipcArguments, "-TestReadyRecordPath", readyPath],
+        { cwd: rootDir, windowsHide: true },
+      );
+      await waitForCondition(
+        () => existsSync(readyPath),
+        "timed out waiting for the primary tray IPC instance",
+      );
+      const secondaryTray = spawnSync(powershell, ipcArguments, {
+        cwd: rootDir,
+        encoding: "utf8",
+        windowsHide: true,
+      });
+      assert.equal(
+        secondaryTray.status,
+        0,
+        secondaryTray.stderr || secondaryTray.stdout,
+      );
+      const primaryResult = await collectSpawnedProcess(primaryTray);
+      assert.equal(
+        primaryResult.code,
+        0,
+        primaryResult.stderr || primaryResult.stdout,
+      );
+      assert.match(
+        primaryResult.stdout,
+        /codexfast tray smoke test passed/,
+      );
+      const startRequests = existsSync(startRecordPath)
+        ? readFileSync(startRecordPath, "utf8").trim().split(/\r?\n/).filter(
+          Boolean,
+        )
+        : [];
+      assert.deepEqual(
+        startRequests,
+        ["start"],
+        "expected the second shortcut invocation to signal exactly one start",
+      );
+
+      const takeoverKey = `IpcTakeover-${process.pid}-${Date.now()}`;
+      const takeoverReadyPath = join(ipcTestRoot, "takeover-ready.txt");
+      const takeoverBaseArguments = [
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        join(rootDir, "scripts", "codexfast-tray.ps1"),
+        "-SmokeTest",
+        "-NoAutoStart",
+        "-TestInstanceKey",
+        takeoverKey,
+      ];
+      const exitingPrimary = spawn(
+        powershell,
+        [
+          ...takeoverBaseArguments,
+          "-TestReadyRecordPath",
+          takeoverReadyPath,
+          "-SmokeTestDurationMs",
+          "100",
+        ],
+        { cwd: rootDir, windowsHide: true },
+      );
+      await waitForCondition(
+        () => existsSync(takeoverReadyPath),
+        "timed out waiting for the exiting tray IPC instance",
+      );
+      const successorTray = spawnSync(
+        powershell,
+        [...takeoverBaseArguments, "-SmokeTestDurationMs", "300"],
+        { cwd: rootDir, encoding: "utf8", windowsHide: true },
+      );
+      const exitingPrimaryResult = await collectSpawnedProcess(exitingPrimary);
+      assert.equal(
+        exitingPrimaryResult.code,
+        0,
+        exitingPrimaryResult.stderr || exitingPrimaryResult.stdout,
+      );
+      assert.equal(
+        successorTray.status,
+        0,
+        successorTray.stderr || successorTray.stdout,
+      );
+      assert.match(
+        successorTray.stdout,
+        /codexfast tray smoke test passed/,
+        "expected the second tray to take over after the first exits without acknowledging",
+      );
+    } finally {
+      rmSync(ipcTestRoot, { recursive: true, force: true });
+    }
 
     const shortcutSelfTest = spawnSync(powershell, [
       "-NoLogo",
@@ -2637,15 +3555,27 @@ export async function runWindowsSuite(rootDir: string): Promise<void> {
   await testRuntimeFailureTerminatesLaunchedProcess();
   await testInitialCdpFailureTerminatesLaunchedProcess();
   await testRuntimeDisconnectTerminatesLaunchedProcess();
+  await testNormalProcessExitAwaitsSessionClose();
   await testReconnectLoopExhaustion();
   await testReconnectSetupFailureIsFailClosed();
   await testReconnectWithoutRendererIsFailClosed();
   await testReconnectWithUnboundPendingRendererIsFailClosed();
   await testReconnectRequiresAllPatchLabels();
+  await testReconnectPreloadsAllResourcesAndSucceeds();
+  await testStaleFetchHandlersCannotCloseReconnectedSession();
+  await testCloseWaitsForLateReconnectConnection();
+  await testCloseDrainsInFlightFetchHandler();
+  await testInitialConnectionTimeoutCancelsConnect();
+  await testHungRuntimeCommandsFailClosed();
+  await testReconnectObservationUsesWallClockDeadline();
+  await testReconnectTargetHashMismatchIsFailClosed();
   await testMissingRequiredPatchLabelIsFailClosed();
   await testRuntimeTargetPathAndHashBinding();
+  await testLatePendingRendererBindingStillPreloads();
   await testPendingAppRendererOriginBinding();
-  await testNonAppRendererIsRejected();
+  await testNonAppRendererIsIgnoredForLaterAppRenderer();
+  await testEmptyUnpausedRendererAllowsLaterAppRenderer();
+  await testEmptyUnpausedRendererResolvesLocationAndReloads();
   await testExistingCodexPreventsActivation();
   await testWindowsProcessLifecycle();
 

@@ -12,6 +12,8 @@ Use these docs for decisions, troubleshooting, and bundle adaptations that futur
   - Verified `Codex.app` version/build pairs, support status, and supported feature paths.
 - [`windows-compatibility.md`](./windows-compatibility.md)
   - Windows MSIX discovery, supported package versions, AUMID details, target signatures, and validation status.
+- [`codexfast-windows-best-practices.html`](./codexfast-windows-best-practices.html)
+  - Offline interactive Windows usage guide with copyable commands, persistent checklists, update gates, and rollback steps.
 - [`patch-targets.md`](./patch-targets.md)
   - High-level mapping from exposed features to the current runtime patch targets.
 - [`../src/`](../src/)
@@ -26,6 +28,15 @@ Use these docs for decisions, troubleshooting, and bundle adaptations that futur
   - The independent repository's GitHub-only release policy and validation checklist.
 - [`bundle-notes/`](./bundle-notes/)
   - Bundle-specific adaptation notes for inspected Codex builds.
+
+## Agent Workflows
+
+- [`.agents/skills/codexfast-windows-update-audit/SKILL.md`](../.agents/skills/codexfast-windows-update-audit/SKILL.md)
+  - Strictly read-only Windows MSIX update audit using `inspect --json`.
+- [`.agents/skills/codexfast-development-flow/SKILL.md`](../.agents/skills/codexfast-development-flow/SKILL.md)
+  - Source, test, generated CLI, and documentation workflow for authorized changes.
+- [`.agents/skills/codexfast-release-flow/SKILL.md`](../.agents/skills/codexfast-release-flow/SKILL.md)
+  - GitHub-only release workflow; npm publication is prohibited for this repository.
 
 ## Writing Rules
 

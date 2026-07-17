@@ -54,7 +54,7 @@ type TargetAttachedToTargetParams = {
 
 export type RuntimePatchSessionHandle = {
   patchedLabels: string[];
-  close: () => void;
+  close: () => void | Promise<void>;
   lost: Promise<Error>;
 };
 
@@ -86,8 +86,14 @@ export type RuntimePatchSessionStarter = (
 ) => Promise<RuntimePatchSessionHandle>;
 
 export type RuntimePatchSessionDependencies = {
-  connect?: (debugPort: number) => Promise<CdpConnection>;
+  connect?: (
+    debugPort: number,
+    signal?: AbortSignal,
+  ) => Promise<CdpConnection>;
   sleep?: (ms: number) => Promise<void>;
+  commandTimeoutMs?: number;
+  connectTimeoutMs?: number;
+  reconnectObservationTimeoutMs?: number;
 };
 
 export type RuntimeLaunchOptions = {
@@ -109,16 +115,19 @@ const runtimePatchInitialTargetTimeoutMs = 45_000;
 const runtimePatchNoTargetIdleMs = 2_500;
 const runtimePatchSettleMs = 750;
 const runtimePatchInitialLoadSettleMs = 1_000;
+const runtimePatchCommandTimeoutMs = 10_000;
+const runtimePatchBrowserConnectTimeoutMs = 15_000;
 const runtimePatchHeartbeatIntervalMs = 5_000;
 const runtimePatchHeartbeatTimeoutMs = 2_000;
 const runtimePatchReconnectMaxAttempts = 3;
 const runtimePatchReconnectDelayMs = 1_000;
-const runtimePatchReconnectAttachMaxAttempts = 10;
-const runtimePatchReconnectAttachDelayMs = 100;
+const runtimePatchReconnectObservationTimeoutMs = 15_000;
+const runtimePatchReconnectObservationPollMs = 100;
 const runtimePatchPreloadMaxAttempts = 3;
 const runtimePatchPreloadRetryDelayMs = 100;
 const runtimePatchRendererOriginMaxAttempts = 100;
 const runtimePatchRendererOriginRetryDelayMs = 50;
+const runtimePatchRendererLocationTimeoutMs = 1_000;
 const runtimePatchDefaultRequiredInitialLabels = ["Plugins access"];
 const runtimePatchNoPluginsAccessRequiredVersionKeys = new Set([
   "26.601.21317+3511",
@@ -169,6 +178,50 @@ function randomDebugPort(): number {
   return 40_000 + (randomBytes(2).readUInt16BE(0) % 20_000);
 }
 
+function runtimeCdpCommand<T>(
+  cdp: CdpConnection,
+  method: string,
+  params: unknown,
+  sessionId: string | undefined,
+  timeoutMs: number,
+): Promise<T> {
+  return cdpCommandWithTimeout(
+    cdp.send<T>(method, params, sessionId),
+    timeoutMs,
+    `Timed out waiting for CDP ${method}.`,
+  );
+}
+
+async function connectRuntimePatchCdp(
+  connect: (
+    debugPort: number,
+    signal?: AbortSignal,
+  ) => Promise<CdpConnection>,
+  debugPort: number,
+  timeoutMs: number,
+): Promise<CdpConnection> {
+  const controller = new AbortController();
+  const pendingConnection = connect(debugPort, controller.signal);
+  try {
+    return await cdpCommandWithTimeout(
+      pendingConnection,
+      timeoutMs,
+      "Timed out waiting for the CDP browser connection.",
+    );
+  } catch (error) {
+    controller.abort();
+    void pendingConnection.then(
+      (lateConnection) => lateConnection.close(),
+      () => undefined,
+    );
+    throw error;
+  }
+}
+
+function runtimePatchLogError(error: Error): string {
+  return error.message.replace(/[\r\n]+/gu, " ").trim() || error.name;
+}
+
 function responseHeadersForFulfill(
   headers: FetchHeader[] | undefined,
 ): FetchHeader[] {
@@ -215,8 +268,15 @@ async function continueFetchRequest(
   cdp: CdpConnection,
   requestId: string,
   sessionId?: string,
+  commandTimeoutMs = runtimePatchCommandTimeoutMs,
 ): Promise<void> {
-  await cdp.send("Fetch.continueRequest", { requestId }, sessionId);
+  await runtimeCdpCommand(
+    cdp,
+    "Fetch.continueRequest",
+    { requestId },
+    sessionId,
+    commandTimeoutMs,
+  );
 }
 
 async function validateRuntimeFetchOutcomeOrBlock(
@@ -225,15 +285,18 @@ async function validateRuntimeFetchOutcomeOrBlock(
   sessionId: string | undefined,
   validateOutcome: RuntimeFetchPatchValidator | undefined,
   outcome: RuntimeFetchPatchOutcome,
+  commandTimeoutMs: number,
 ): Promise<void> {
   try {
     validateOutcome?.(outcome);
   } catch (error) {
     try {
-      await cdp.send(
+      await runtimeCdpCommand(
+        cdp,
         "Fetch.failRequest",
         { requestId, errorReason: "BlockedByClient" },
         sessionId,
+        commandTimeoutMs,
       );
     } catch {
       cdp.close();
@@ -248,6 +311,7 @@ async function handleFetchRequestPaused(
   params: FetchRequestPausedParams,
   sessionId?: string,
   validateOutcome?: RuntimeFetchPatchValidator,
+  commandTimeoutMs = runtimePatchCommandTimeoutMs,
 ): Promise<RuntimeFetchPatchOutcome> {
   const resourceUrl = params.request.url;
   if (!isRuntimeJavaScriptResource(resourceUrl)) {
@@ -264,55 +328,35 @@ async function handleFetchRequestPaused(
       sessionId,
       validateOutcome,
       outcome,
+      commandTimeoutMs,
     );
-    await continueFetchRequest(cdp, params.requestId, sessionId);
+    await continueFetchRequest(
+      cdp,
+      params.requestId,
+      sessionId,
+      commandTimeoutMs,
+    );
     return outcome;
   }
   debugRuntime(`paused ${resourceUrl}`);
 
   let bodyResult: { body?: string; base64Encoded?: boolean };
   try {
-    bodyResult = await cdp.send("Fetch.getResponseBody", {
-      requestId: params.requestId,
-    }, sessionId);
-  } catch {
-    debugRuntime(`getResponseBody failed ${resourceUrl}`);
-    const outcome = {
-      labels: [],
-      sawJavaScript: true,
-      resourceOrigin: normalizedRuntimeResourceOrigin(resourceUrl),
-      resourcePath: normalizedRuntimeResourcePath(resourceUrl),
-      bodySha256: "",
-    };
-    await validateRuntimeFetchOutcomeOrBlock(
+    bodyResult = await runtimeCdpCommand(
       cdp,
-      params.requestId,
+      "Fetch.getResponseBody",
+      { requestId: params.requestId },
       sessionId,
-      validateOutcome,
-      outcome,
+      commandTimeoutMs,
     );
-    await continueFetchRequest(cdp, params.requestId, sessionId);
-    return outcome;
+  } catch (error) {
+    throw new Error(
+      `Failed to read runtime response body for ${resourceUrl}: ${asError(error).message}`,
+    );
   }
 
   if (typeof bodyResult.body !== "string") {
-    debugRuntime(`missing body ${resourceUrl}`);
-    const outcome = {
-      labels: [],
-      sawJavaScript: true,
-      resourceOrigin: normalizedRuntimeResourceOrigin(resourceUrl),
-      resourcePath: normalizedRuntimeResourcePath(resourceUrl),
-      bodySha256: "",
-    };
-    await validateRuntimeFetchOutcomeOrBlock(
-      cdp,
-      params.requestId,
-      sessionId,
-      validateOutcome,
-      outcome,
-    );
-    await continueFetchRequest(cdp, params.requestId, sessionId);
-    return outcome;
+    throw new Error(`Runtime response body was missing for ${resourceUrl}.`);
   }
 
   const body = bodyResult.base64Encoded
@@ -343,8 +387,14 @@ async function handleFetchRequestPaused(
       sessionId,
       validateOutcome,
       outcome,
+      commandTimeoutMs,
     );
-    await continueFetchRequest(cdp, params.requestId, sessionId);
+    await continueFetchRequest(
+      cdp,
+      params.requestId,
+      sessionId,
+      commandTimeoutMs,
+    );
     return outcome;
   }
   const labels = [
@@ -364,6 +414,7 @@ async function handleFetchRequestPaused(
     sessionId,
     validateOutcome,
     outcome,
+    commandTimeoutMs,
   );
   if (patchResult.matchedLabels.length > 0) {
     debugRuntime(
@@ -372,16 +423,27 @@ async function handleFetchRequestPaused(
   }
 
   if (patchResult.content === body) {
-    await continueFetchRequest(cdp, params.requestId, sessionId);
+    await continueFetchRequest(
+      cdp,
+      params.requestId,
+      sessionId,
+      commandTimeoutMs,
+    );
     return outcome;
   }
 
-  await cdp.send("Fetch.fulfillRequest", {
-    requestId: params.requestId,
-    responseCode: params.responseStatusCode ?? 200,
-    responseHeaders: responseHeadersForFulfill(params.responseHeaders),
-    body: Buffer.from(patchResult.content, "utf8").toString("base64"),
-  }, sessionId);
+  await runtimeCdpCommand(
+    cdp,
+    "Fetch.fulfillRequest",
+    {
+      requestId: params.requestId,
+      responseCode: params.responseStatusCode ?? 200,
+      responseHeaders: responseHeadersForFulfill(params.responseHeaders),
+      body: Buffer.from(patchResult.content, "utf8").toString("base64"),
+    },
+    sessionId,
+    commandTimeoutMs,
+  );
   return outcome;
 }
 
@@ -502,26 +564,39 @@ export function runtimePatcherSourceForContext(
 async function enableRuntimePatchInterception(
   cdp: CdpConnection,
   options: { sessionId: string; waitForInitialLoad: boolean; reload: boolean },
+  commandTimeoutMs: number,
 ): Promise<void> {
-  await cdp.send("Fetch.enable", {
-    patterns: [
-      {
-        urlPattern: "app://*/assets/*.js",
-        requestStage: "Response",
-      },
-      {
-        urlPattern: "app://*/webview/assets/*.js",
-        requestStage: "Response",
-      },
-      {
-        urlPattern: "app://*/.vite/build/*.js",
-        requestStage: "Response",
-      },
-    ],
-  }, options.sessionId);
+  await runtimeCdpCommand(
+    cdp,
+    "Fetch.enable",
+    {
+      patterns: [
+        {
+          urlPattern: "app://*/assets/*.js",
+          requestStage: "Response",
+        },
+        {
+          urlPattern: "app://*/webview/assets/*.js",
+          requestStage: "Response",
+        },
+        {
+          urlPattern: "app://*/.vite/build/*.js",
+          requestStage: "Response",
+        },
+      ],
+    },
+    options.sessionId,
+    commandTimeoutMs,
+  );
   debugRuntime("Fetch.enable ok");
   if (options.waitForInitialLoad || options.reload) {
-    await cdp.send("Page.enable", undefined, options.sessionId);
+    await runtimeCdpCommand(
+      cdp,
+      "Page.enable",
+      undefined,
+      options.sessionId,
+      commandTimeoutMs,
+    );
     debugRuntime("Page.enable ok");
   }
   if (options.waitForInitialLoad) {
@@ -529,18 +604,59 @@ async function enableRuntimePatchInterception(
     debugRuntime("initial page load settled");
   }
   if (options.reload) {
-    await cdp.send("Page.reload", { ignoreCache: true }, options.sessionId);
+    await runtimeCdpCommand(
+      cdp,
+      "Page.reload",
+      { ignoreCache: true },
+      options.sessionId,
+      commandTimeoutMs,
+    );
     debugRuntime("Page.reload ok");
   }
 }
 
-async function enableRuntimePatchAutoAttach(cdp: CdpConnection): Promise<void> {
-  await cdp.send("Target.setAutoAttach", {
-    autoAttach: true,
-    waitForDebuggerOnStart: true,
-    flatten: true,
-  });
+async function enableRuntimePatchAutoAttach(
+  cdp: CdpConnection,
+  commandTimeoutMs: number,
+): Promise<void> {
+  await runtimeCdpCommand(
+    cdp,
+    "Target.setAutoAttach",
+    {
+      autoAttach: true,
+      waitForDebuggerOnStart: true,
+      flatten: true,
+    },
+    undefined,
+    commandTimeoutMs,
+  );
   debugRuntime("Target.setAutoAttach ok");
+}
+
+async function runtimeRendererOriginFromLocation(
+  cdp: CdpConnection,
+  sessionId: string,
+  commandTimeoutMs: number,
+): Promise<string> {
+  const evaluation = await runtimeCdpCommand<{
+    result?: { value?: unknown };
+    exceptionDetails?: { text?: string };
+  }>(
+    cdp,
+    "Runtime.evaluate",
+    {
+      expression: "globalThis.location?.href ?? ''",
+      returnByValue: true,
+    },
+    sessionId,
+    Math.min(commandTimeoutMs, runtimePatchRendererLocationTimeoutMs),
+  );
+  if (evaluation?.exceptionDetails) {
+    return "";
+  }
+  return typeof evaluation?.result?.value === "string"
+    ? normalizedRuntimeResourceOrigin(evaluation.result.value)
+    : "";
 }
 
 async function preloadRuntimePatchResources(
@@ -548,6 +664,7 @@ async function preloadRuntimePatchResources(
   sessionId: string,
   resourcePaths: string[],
   sleepFor: (ms: number) => Promise<void>,
+  commandTimeoutMs: number,
 ): Promise<void> {
   if (resourcePaths.length === 0) {
     return;
@@ -557,16 +674,22 @@ async function preloadRuntimePatchResources(
     `Promise.all(${resources}.map(async resourcePath=>{const resourceUrl=new URL(resourcePath,document.baseURI).href;const response=await fetch(resourceUrl);if(!response.ok)throw new Error(\`codexfast preload failed: \${response.status} \${resourceUrl}\`);await response.text();return resourceUrl}))`;
   for (let attempt = 1; attempt <= runtimePatchPreloadMaxAttempts; attempt += 1) {
     try {
-      const evaluation = await cdp.send<{
+      const evaluation = await runtimeCdpCommand<{
         exceptionDetails?: {
           text?: string;
           exception?: { description?: string };
         };
-      }>("Runtime.evaluate", {
-        expression,
-        awaitPromise: true,
-        returnByValue: true,
-      }, sessionId);
+      }>(
+        cdp,
+        "Runtime.evaluate",
+        {
+          expression,
+          awaitPromise: true,
+          returnByValue: true,
+        },
+        sessionId,
+        commandTimeoutMs,
+      );
       const exceptionMessage =
         evaluation?.exceptionDetails?.exception?.description ??
         evaluation?.exceptionDetails?.text;
@@ -603,11 +726,30 @@ export async function startRuntimePatchSession(
 ): Promise<RuntimePatchSessionHandle> {
   const connect = dependencies.connect ?? waitForRuntimeBrowserConnection;
   const sleepFor = dependencies.sleep ?? sleep;
-  let cdp = await connect(debugPort);
+  const commandTimeoutMs = dependencies.commandTimeoutMs ??
+    runtimePatchCommandTimeoutMs;
+  const connectTimeoutMs = dependencies.connectTimeoutMs ??
+    runtimePatchBrowserConnectTimeoutMs;
+  const reconnectObservationTimeoutMs =
+    dependencies.reconnectObservationTimeoutMs ??
+      runtimePatchReconnectObservationTimeoutMs;
+  const reconnectObservationMaxAttempts = Math.max(
+    1,
+    Math.ceil(
+      reconnectObservationTimeoutMs / runtimePatchReconnectObservationPollMs,
+    ),
+  );
+  let cdp = await connectRuntimePatchCdp(
+    connect,
+    debugPort,
+    connectTimeoutMs,
+  );
   const observedLabels = new Set<string>();
   const rendererOriginsBySession = new Map<string, string>();
   const pausedRequestHandlers = new Set<Promise<void>>();
   const targetSetupHandlers = new Set<Promise<void>>();
+  const initialPreloadHandlers = new Set<Promise<void>>();
+  const reconnectObservationTasks = new Set<Promise<void>>();
   const reconnectObservedLabelsByGeneration = new Map<number, Set<string>>();
   const attachedPageSessions = new Set<string>();
   let activePageSessionId: string | null = null;
@@ -621,12 +763,27 @@ export async function startRuntimePatchSession(
   let reconnectSetupError: Error | null = null;
   let connectionGeneration = 0;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let reconnectTask: Promise<void> | null = null;
+  let reconnectConnectController: AbortController | null = null;
   let resolveLost: (error: Error) => void = () => undefined;
+  let resolveCloseSignal: () => void = () => undefined;
+  let closeSignalResolved = false;
   let markInitialObserved: () => void = () => undefined;
   let markInitialJavaScriptTraffic: () => void = () => undefined;
   const lost = new Promise<Error>((resolve) => {
     resolveLost = resolve;
   });
+  const closeSignal = new Promise<void>((resolve) => {
+    resolveCloseSignal = resolve;
+  });
+
+  const signalClosed = (): void => {
+    if (closeSignalResolved) {
+      return;
+    }
+    closeSignalResolved = true;
+    resolveCloseSignal();
+  };
 
   const stopHeartbeat = (): void => {
     if (heartbeatTimer) {
@@ -635,14 +792,98 @@ export async function startRuntimePatchSession(
     }
   };
 
+  const abortReconnectConnection = (): void => {
+    reconnectConnectController?.abort();
+  };
+
   const markSessionLost = (error: Error): void => {
     if (closed) {
       return;
     }
     closed = true;
+    connectionGeneration += 1;
+    signalClosed();
     stopHeartbeat();
+    abortReconnectConnection();
     cdp.close();
     resolveLost(error);
+  };
+
+  const generationIsActive = (generation: number): boolean =>
+    !closed && generation === connectionGeneration;
+
+  const drainRuntimeHandlers = async (): Promise<void> => {
+    while (
+      targetSetupHandlers.size > 0 ||
+      initialPreloadHandlers.size > 0 ||
+      pausedRequestHandlers.size > 0
+    ) {
+      await Promise.allSettled([
+        ...targetSetupHandlers,
+        ...initialPreloadHandlers,
+        ...pausedRequestHandlers,
+      ]);
+    }
+  };
+
+  const drainReconnectObservationTasks = async (): Promise<void> => {
+    while (reconnectObservationTasks.size > 0) {
+      await Promise.allSettled([...reconnectObservationTasks]);
+    }
+  };
+
+  const waitForReconnectDelay = async (milliseconds: number): Promise<boolean> => {
+    const outcome = await Promise.race([
+      sleepFor(milliseconds).then(() => "elapsed" as const),
+      closeSignal.then(() => "closed" as const),
+    ]);
+    return outcome === "elapsed" && !closed;
+  };
+
+  const connectForReconnect = async (): Promise<CdpConnection | null> => {
+    const controller = new AbortController();
+    reconnectConnectController = controller;
+    const pendingConnection = connect(debugPort, controller.signal);
+    const timedConnection = cdpCommandWithTimeout(
+      pendingConnection,
+      connectTimeoutMs,
+      "Timed out waiting for the CDP browser connection.",
+    );
+    try {
+      const outcome = await Promise.race([
+        timedConnection.then((connection) => ({
+          type: "connected" as const,
+          connection,
+        })),
+        closeSignal.then(() => ({ type: "closed" as const })),
+      ]);
+      if (outcome.type === "closed") {
+        controller.abort();
+        try {
+          const lateConnection = await timedConnection;
+          lateConnection.close();
+        } catch {
+          // The cancelled connection is fully drained before close() returns.
+        }
+        return null;
+      }
+      if (closed) {
+        outcome.connection.close();
+        return null;
+      }
+      return outcome.connection;
+    } catch (error) {
+      controller.abort();
+      void pendingConnection.then(
+        (lateConnection) => lateConnection.close(),
+        () => undefined,
+      );
+      throw error;
+    } finally {
+      if (reconnectConnectController === controller) {
+        reconnectConnectController = null;
+      }
+    }
   };
 
   const reconnectRuntimePatchSession = async (reason: Error): Promise<void> => {
@@ -650,6 +891,7 @@ export async function startRuntimePatchSession(
       return;
     }
     reconnecting = true;
+    connectionGeneration += 1;
     cdp.close();
     let lastError = reason;
 
@@ -663,57 +905,118 @@ export async function startRuntimePatchSession(
         return;
       }
       if (attempt > 1) {
-        await sleepFor(runtimePatchReconnectDelayMs);
+        if (!await waitForReconnectDelay(runtimePatchReconnectDelayMs)) {
+          reconnecting = false;
+          return;
+        }
       }
       printLine(
-        `Runtime patch session reconnecting (${attempt}/${runtimePatchReconnectMaxAttempts})...`,
+        `Runtime patch session reconnecting (${attempt}/${runtimePatchReconnectMaxAttempts}); reason: ${runtimePatchLogError(reason)}.`,
       );
+      let reconnectGeneration: number | null = null;
       try {
         reconnectSetupError = null;
         activePageSessionId = null;
         attachedPageSessions.clear();
         rendererOriginsBySession.clear();
-        const nextCdp = await connect(debugPort);
+        const nextCdp = await connectForReconnect();
+        if (!nextCdp || closed) {
+          nextCdp?.close();
+          reconnecting = false;
+          return;
+        }
         connectionGeneration += 1;
-        const reconnectGeneration = connectionGeneration;
+        const activeReconnectGeneration = connectionGeneration;
+        reconnectGeneration = activeReconnectGeneration;
         const reconnectObservedLabels = new Set<string>();
         reconnectObservedLabelsByGeneration.set(
-          reconnectGeneration,
+          activeReconnectGeneration,
           reconnectObservedLabels,
         );
         cdp = nextCdp;
-        registerRuntimeFetchHandler(reconnectGeneration);
-        registerRuntimeTargetHandler(reconnectGeneration);
-        await enableRuntimePatchAutoAttach(cdp);
-        for (
-          let attachAttempt = 1;
-          attachAttempt <= runtimePatchReconnectAttachMaxAttempts;
-          attachAttempt += 1
-        ) {
-          await Promise.resolve();
-          while (targetSetupHandlers.size > 0) {
-            await Promise.all([...targetSetupHandlers]);
+        registerRuntimeFetchHandler(activeReconnectGeneration);
+        registerRuntimeTargetHandler(activeReconnectGeneration);
+        const observeReconnect = async (): Promise<void> => {
+          await enableRuntimePatchAutoAttach(cdp, commandTimeoutMs);
+          if (!generationIsActive(activeReconnectGeneration)) {
+            return;
           }
-          while (pausedRequestHandlers.size > 0) {
-            await Promise.all([...pausedRequestHandlers]);
+          let preloadedSessionId: string | null = null;
+          for (
+            let observationAttempt = 1;
+            observationAttempt <= reconnectObservationMaxAttempts;
+            observationAttempt += 1
+          ) {
+            await drainRuntimeHandlers();
+            if (!generationIsActive(activeReconnectGeneration)) {
+              return;
+            }
+            if (reconnectSetupError) {
+              throw reconnectSetupError;
+            }
+            const boundSessionId =
+              activePageSessionId &&
+                rendererOriginsBySession.has(activePageSessionId)
+                ? activePageSessionId
+                : [...attachedPageSessions].find((sessionId) =>
+                  rendererOriginsBySession.has(sessionId)
+                ) ?? null;
+            if (boundSessionId && preloadedSessionId !== boundSessionId) {
+              await preloadRuntimePatchResources(
+                nextCdp,
+                boundSessionId,
+                initialResourcePaths,
+                async (milliseconds) => {
+                  if (!await waitForReconnectDelay(milliseconds)) {
+                    throw new Error("Runtime patch session closed.");
+                  }
+                },
+                commandTimeoutMs,
+              );
+              if (!generationIsActive(activeReconnectGeneration)) {
+                return;
+              }
+              preloadedSessionId = boundSessionId;
+              await drainRuntimeHandlers();
+            }
+            const missingReconnectLabels =
+              missingRuntimePatchRequiredInitialLabels(
+                reconnectObservedLabels,
+                requiredInitialLabels,
+              );
+            if (boundSessionId && missingReconnectLabels.length === 0) {
+              return;
+            }
+            if (observationAttempt < reconnectObservationMaxAttempts) {
+              if (!await waitForReconnectDelay(
+                runtimePatchReconnectObservationPollMs,
+              )) {
+                return;
+              }
+            }
           }
-          if (reconnectSetupError) {
-            throw reconnectSetupError;
-          }
-          const hasBoundAppRenderer = [...attachedPageSessions].some(
-            (sessionId) => rendererOriginsBySession.has(sessionId),
-          );
-          const missingReconnectLabels =
-            missingRuntimePatchRequiredInitialLabels(
-              reconnectObservedLabels,
-              requiredInitialLabels,
-            );
-          if (hasBoundAppRenderer && missingReconnectLabels.length === 0) {
-            break;
-          }
-          if (attachAttempt < runtimePatchReconnectAttachMaxAttempts) {
-            await sleepFor(runtimePatchReconnectAttachDelayMs);
-          }
+        };
+        let observationTask: Promise<void>;
+        observationTask = observeReconnect().finally(() => {
+          reconnectObservationTasks.delete(observationTask);
+        });
+        reconnectObservationTasks.add(observationTask);
+        await cdpCommandWithTimeout(
+          Promise.race([
+            observationTask,
+            closeSignal.then(() => undefined),
+          ]),
+          reconnectObservationTimeoutMs,
+          `Timed out after ${reconnectObservationTimeoutMs}ms while observing the reconnected renderer.`,
+        );
+        if (!generationIsActive(activeReconnectGeneration)) {
+          nextCdp.close();
+          reconnecting = false;
+          return;
+        }
+        await drainRuntimeHandlers();
+        if (reconnectSetupError) {
+          throw reconnectSetupError;
         }
         const hasBoundAppRenderer = [...attachedPageSessions].some(
           (sessionId) => rendererOriginsBySession.has(sessionId),
@@ -723,10 +1026,11 @@ export async function startRuntimePatchSession(
             "CDP reconnected without a renderer bound to an app origin.",
           );
         }
-        const missingReconnectLabels = missingRuntimePatchRequiredInitialLabels(
-          reconnectObservedLabels,
-          requiredInitialLabels,
-        );
+        const missingReconnectLabels =
+          missingRuntimePatchRequiredInitialLabels(
+            reconnectObservedLabels,
+            requiredInitialLabels,
+          );
         if (missingReconnectLabels.length > 0) {
           throw new Error(
             `CDP reconnected without observing required targets: ${missingReconnectLabels.join(", ")}.`,
@@ -738,13 +1042,44 @@ export async function startRuntimePatchSession(
         return;
       } catch (error) {
         lastError = asError(error);
-        reconnectObservedLabelsByGeneration.delete(connectionGeneration);
+        if (reconnectGeneration !== null) {
+          reconnectObservedLabelsByGeneration.delete(reconnectGeneration);
+          if (connectionGeneration === reconnectGeneration) {
+            connectionGeneration += 1;
+          }
+        }
         cdp.close();
+        if (closed) {
+          reconnecting = false;
+          return;
+        }
+        printLine(
+          `Runtime patch reconnect attempt ${attempt} failed: ${runtimePatchLogError(lastError)}`,
+        );
       }
     }
 
     reconnecting = false;
     markSessionLost(new Error(runtimePatchSessionLostMessage(lastError)));
+  };
+
+  const scheduleRuntimePatchReconnect = (reason: Error): void => {
+    if (closed || reconnecting) {
+      return;
+    }
+    let task: Promise<void>;
+    task = reconnectRuntimePatchSession(reason)
+      .catch((error: unknown) => {
+        markSessionLost(
+          new Error(runtimePatchSessionLostMessage(asError(error))),
+        );
+      })
+      .finally(() => {
+        if (reconnectTask === task) {
+          reconnectTask = null;
+        }
+      });
+    reconnectTask = task;
   };
 
   const handleConnectionFailure = (generation: number, error: Error): void => {
@@ -759,7 +1094,40 @@ export async function startRuntimePatchSession(
       reconnectSetupError = error;
       return;
     }
-    void reconnectRuntimePatchSession(error);
+    scheduleRuntimePatchReconnect(error);
+  };
+
+  const beginInitialResourcePreload = (
+    attachedCdp: CdpConnection,
+    sessionId: string,
+    generation: number,
+  ): Promise<void> | null => {
+    if (
+      initialCompleted ||
+      initialPreloadStarted ||
+      initialResourcePaths.length === 0 ||
+      !generationIsActive(generation) ||
+      !rendererOriginsBySession.has(sessionId)
+    ) {
+      return null;
+    }
+    initialPreloadStarted = true;
+    const task = preloadRuntimePatchResources(
+      attachedCdp,
+      sessionId,
+      initialResourcePaths,
+      sleepFor,
+      commandTimeoutMs,
+    );
+    initialPreloadHandlers.add(task);
+    task.then(
+      () => initialPreloadHandlers.delete(task),
+      (error: unknown) => {
+        initialPreloadHandlers.delete(task);
+        handleConnectionFailure(generation, asError(error));
+      },
+    );
+    return task;
   };
 
   const rejectRuntimeFetchOutcome = (error: Error): never => {
@@ -777,12 +1145,18 @@ export async function startRuntimePatchSession(
       handleConnectionFailure(generation, error);
     });
     attachedCdp.on("Fetch.requestPaused", (params: unknown, message) => {
+      if (!generationIsActive(generation)) {
+        return;
+      }
       const task = handleFetchRequestPaused(
         attachedCdp,
         patcherSource,
         params as FetchRequestPausedParams,
         message.sessionId,
         (outcome) => {
+          if (!generationIsActive(generation)) {
+            return;
+          }
           const rendererSessionId = message.sessionId ?? "";
           let expectedOrigin = rendererSessionId
             ? rendererOriginsBySession.get(rendererSessionId) ?? ""
@@ -798,6 +1172,7 @@ export async function startRuntimePatchSession(
             if (!expectedOrigin) {
               expectedOrigin = outcome.resourceOrigin;
               rendererOriginsBySession.set(rendererSessionId, expectedOrigin);
+              activePageSessionId = rendererSessionId;
               debugRuntime(
                 `bound pending renderer session ${rendererSessionId} to origin ${expectedOrigin}`,
               );
@@ -837,7 +1212,11 @@ export async function startRuntimePatchSession(
             }
           }
         },
+        commandTimeoutMs,
       ).then((outcome) => {
+        if (!generationIsActive(generation)) {
+          return;
+        }
         const { labels } = outcome;
         const reconnectObservedLabels =
           reconnectObservedLabelsByGeneration.get(generation);
@@ -858,6 +1237,15 @@ export async function startRuntimePatchSession(
           debugRuntime(
             `patched labels now active: ${[...observedLabels].join(", ")}`,
           );
+        }
+        const rendererSessionId = message.sessionId;
+        if (rendererSessionId) {
+          const preloadTask = beginInitialResourcePreload(
+            attachedCdp,
+            rendererSessionId,
+            generation,
+          );
+          void preloadTask?.catch(() => undefined);
         }
       });
       pausedRequestHandlers.add(task);
@@ -884,31 +1272,36 @@ export async function startRuntimePatchSession(
         }
         if (targetType !== "page") {
           if (attached.waitingForDebugger) {
-            await attachedCdp.send(
+            await runtimeCdpCommand(
+              attachedCdp,
               "Runtime.runIfWaitingForDebugger",
               undefined,
               attached.sessionId,
+              commandTimeoutMs,
             );
           }
           return;
         }
-        const targetOrigin = normalizedRuntimeResourceOrigin(targetUrl);
-        const pendingAppRenderer =
-          targetUrl === "" && attached.waitingForDebugger === true;
+        let targetOrigin = normalizedRuntimeResourceOrigin(targetUrl);
+        const pendingAppRenderer = targetUrl === "";
         if (!targetOrigin && !pendingAppRenderer) {
-          handleConnectionFailure(
-            generation,
-            new Error(
-              `Refusing non-app renderer target ${targetUrl || "<empty>"}.`,
-            ),
-          );
+          if (attached.waitingForDebugger) {
+            await runtimeCdpCommand(
+              attachedCdp,
+              "Runtime.runIfWaitingForDebugger",
+              undefined,
+              attached.sessionId,
+              commandTimeoutMs,
+            );
+          }
+          debugRuntime(`ignored non-app page target ${targetUrl}`);
           return;
         }
 
-        activePageSessionId = attached.sessionId;
         attachedPageSessions.add(attached.sessionId);
         if (targetOrigin) {
           rendererOriginsBySession.set(attached.sessionId, targetOrigin);
+          activePageSessionId = attached.sessionId;
         }
         debugRuntime(
           `attached target type=${targetType} url=${targetUrl || "<pending>"} session=${attached.sessionId}`,
@@ -916,22 +1309,59 @@ export async function startRuntimePatchSession(
         await enableRuntimePatchInterception(attachedCdp, {
           sessionId: attached.sessionId,
           waitForInitialLoad: false,
-          reload: !attached.waitingForDebugger,
-        });
+          reload: false,
+        }, commandTimeoutMs);
+        if (!generationIsActive(generation)) {
+          return;
+        }
         if (attached.waitingForDebugger) {
-          await attachedCdp.send(
+          await runtimeCdpCommand(
+            attachedCdp,
             "Runtime.runIfWaitingForDebugger",
             undefined,
             attached.sessionId,
+            commandTimeoutMs,
           );
           debugRuntime("Runtime.runIfWaitingForDebugger ok");
+        }
+        if (!targetOrigin) {
+          try {
+            targetOrigin = await runtimeRendererOriginFromLocation(
+              attachedCdp,
+              attached.sessionId,
+              commandTimeoutMs,
+            );
+          } catch (error) {
+            debugRuntime(
+              `could not resolve pending renderer location for session ${attached.sessionId}: ${runtimePatchLogError(asError(error))}`,
+            );
+          }
+          if (!generationIsActive(generation)) {
+            return;
+          }
+          if (targetOrigin) {
+            rendererOriginsBySession.set(attached.sessionId, targetOrigin);
+            activePageSessionId = attached.sessionId;
+            debugRuntime(
+              `bound pending renderer session ${attached.sessionId} from location ${targetOrigin}`,
+            );
+          }
+        }
+        if (!attached.waitingForDebugger && targetOrigin) {
+          await runtimeCdpCommand(
+            attachedCdp,
+            "Page.reload",
+            { ignoreCache: true },
+            attached.sessionId,
+            commandTimeoutMs,
+          );
+          debugRuntime("Page.reload ok");
         }
         if (
           !initialCompleted &&
           !initialPreloadStarted &&
           initialResourcePaths.length > 0
         ) {
-          initialPreloadStarted = true;
           for (
             let originAttempt = 1;
             originAttempt <= runtimePatchRendererOriginMaxAttempts;
@@ -942,19 +1372,25 @@ export async function startRuntimePatchSession(
             }
             if (originAttempt < runtimePatchRendererOriginMaxAttempts) {
               await sleepFor(runtimePatchRendererOriginRetryDelayMs);
+              if (!generationIsActive(generation)) {
+                return;
+              }
             }
           }
           if (!rendererOriginsBySession.has(attached.sessionId)) {
-            throw new Error(
-              "Renderer did not navigate to an app origin before runtime resource preload.",
+            debugRuntime(
+              `pending renderer session ${attached.sessionId} did not bind to an app origin`,
             );
+            return;
           }
-          await preloadRuntimePatchResources(
+          const preloadTask = beginInitialResourcePreload(
             attachedCdp,
             attached.sessionId,
-            initialResourcePaths,
-            sleepFor,
+            generation,
           );
+          if (preloadTask) {
+            await preloadTask;
+          }
         }
       })();
       targetSetupHandlers.add(task);
@@ -965,6 +1401,9 @@ export async function startRuntimePatchSession(
       return task;
     });
     attachedCdp.on("Target.detachedFromTarget", (params: unknown) => {
+      if (!generationIsActive(generation)) {
+        return;
+      }
       const detached = params as { sessionId?: string };
       if (!detached.sessionId) {
         return;
@@ -972,7 +1411,9 @@ export async function startRuntimePatchSession(
       attachedPageSessions.delete(detached.sessionId);
       rendererOriginsBySession.delete(detached.sessionId);
       if (activePageSessionId === detached.sessionId) {
-        activePageSessionId = [...attachedPageSessions][0] ?? null;
+        activePageSessionId = [...attachedPageSessions].find((sessionId) =>
+          rendererOriginsBySession.has(sessionId)
+        ) ?? null;
       }
     });
   };
@@ -983,7 +1424,7 @@ export async function startRuntimePatchSession(
         return;
       }
       if (cdp.isClosed()) {
-        void reconnectRuntimePatchSession(
+        scheduleRuntimePatchReconnect(
           new Error("CDP WebSocket connection closed."),
         );
         return;
@@ -993,7 +1434,7 @@ export async function startRuntimePatchSession(
         runtimePatchHeartbeatTimeoutMs,
         "Timed out waiting for CDP heartbeat.",
       ).catch((error: unknown) => {
-        void reconnectRuntimePatchSession(asError(error));
+        scheduleRuntimePatchReconnect(asError(error));
       });
     }, runtimePatchHeartbeatIntervalMs);
   };
@@ -1108,8 +1549,13 @@ export async function startRuntimePatchSession(
           finish();
           return;
         }
-        void cdp
-          .send("Page.reload", { ignoreCache: true }, activePageSessionId)
+        void runtimeCdpCommand(
+          cdp,
+          "Page.reload",
+          { ignoreCache: true },
+          activePageSessionId,
+          commandTimeoutMs,
+        )
           .then(() => {
             debugRuntime("Page.reload retry for required runtime targets ok");
           })
@@ -1173,7 +1619,7 @@ export async function startRuntimePatchSession(
     registerRuntimeTargetHandler(connectionGeneration);
 
     try {
-      await enableRuntimePatchAutoAttach(cdp);
+      await enableRuntimePatchAutoAttach(cdp, commandTimeoutMs);
     } catch (error) {
       failSession(asError(error));
     }
@@ -1183,18 +1629,34 @@ export async function startRuntimePatchSession(
     startHeartbeat();
     return {
       patchedLabels,
-      close: () => {
-        closed = true;
+      close: async () => {
+        if (!closed) {
+          closed = true;
+          connectionGeneration += 1;
+          signalClosed();
+        }
         stopHeartbeat();
+        abortReconnectConnection();
         cdp.close();
+        const pendingReconnect = reconnectTask;
+        if (pendingReconnect) {
+          await pendingReconnect.catch(() => undefined);
+        }
+        await drainReconnectObservationTasks();
+        await drainRuntimeHandlers();
       },
       lost,
     };
   } finally {
     if (!keepSessionOpen) {
       closed = true;
+      connectionGeneration += 1;
+      signalClosed();
       stopHeartbeat();
+      abortReconnectConnection();
       cdp.close();
+      await drainReconnectObservationTasks();
+      await drainRuntimeHandlers();
     }
   }
 }
@@ -1358,25 +1820,27 @@ export async function runRuntimeLaunch(
       session.lost.then((error) => ({ type: "session-lost" as const, error })),
     ]);
     if (outcome.type === "session-lost") {
-      session.close();
+      const lostSession = session;
       session = null;
       if (launchedProcess) {
         await terminateRuntimeLaunchProcess(launchedProcess);
       }
+      await lostSession.close();
       printRuntimePatchSessionLost(outcome.error);
       return printExitBlock(1).exitCode;
     }
-    session.close();
+    await session.close();
     session = null;
     printExitCode(outcome.exitCode);
     return outcome.exitCode;
   } catch (error) {
-    if (session) {
-      session.close();
-      session = null;
-    }
+    const failedSession = session;
+    session = null;
     if (launchedProcess) {
       await terminateRuntimeLaunchProcess(launchedProcess);
+    }
+    if (failedSession) {
+      await failedSession.close();
     }
     printLine(`Runtime launch failed: ${asError(error).message}`);
   }

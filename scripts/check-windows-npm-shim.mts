@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,48 +17,71 @@ if (process.platform !== "win32") {
 }
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const npmCli = join(
+  dirname(process.execPath),
+  "node_modules",
+  "npm",
+  "bin",
+  "npm-cli.js",
+);
 const packageVersion = JSON.parse(
   readFileSync(join(rootDir, "package.json"), "utf8"),
 ).version as string;
 const testDir = mkdtempSync(join(tmpdir(), "codexfast-npm-shim-"));
+const sourceRoot = mkdtempSync(join(tmpdir(), "codexfast-npm-source-"));
+const sourceLink = join(sourceRoot, "codexfast-&-source");
 
-function quoteCmdArgument(value: string): string {
-  return /[\s"]/u.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
+function quotePowerShellLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 function runWindowsCommand(
   command: string,
   args: string[],
   cwd: string,
+  environment: NodeJS.ProcessEnv = process.env,
 ) {
-  const commandLine = [command, ...args].map(quoteCmdArgument).join(" ");
-  return spawnSync(process.env.ComSpec ?? "cmd.exe", [
-    "/d",
-    "/s",
-    "/c",
-    commandLine,
+  const commandLine = [command, ...args]
+    .map(quotePowerShellLiteral)
+    .join(" ");
+  return spawnSync("powershell.exe", [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    `& ${commandLine}; exit $LASTEXITCODE`,
   ], {
     cwd,
     encoding: "utf8",
+    env: environment,
   });
 }
 
 try {
+  if (!existsSync(npmCli)) {
+    throw new Error(`npm CLI was not found next to Node.js: ${npmCli}`);
+  }
+  symlinkSync(rootDir, sourceLink, "junction");
   writeFileSync(
     join(testDir, "package.json"),
     JSON.stringify({ private: true }, null, 2),
   );
-  const install = runWindowsCommand(
-    "npm.cmd",
+  const install = spawnSync(
+    process.execPath,
     [
+      npmCli,
       "install",
       "--ignore-scripts",
       "--no-package-lock",
       "--no-audit",
       "--no-fund",
-      rootDir,
+      sourceLink,
     ],
-    testDir,
+    {
+      cwd: testDir,
+      encoding: "utf8",
+      env: process.env,
+    },
   );
   if (install.status !== 0) {
     throw new Error(
@@ -83,7 +107,47 @@ try {
       `Generated codexfast.cmd failed: ${version.stderr || version.stdout}`,
     );
   }
+
+  const missingBundle = join(
+    testDir,
+    "Program Files",
+    "WindowsApps",
+    "OpenAI.Codex_26.707.3748.0_x64__codexfastshimtest",
+  );
+  const inspect = runWindowsCommand(
+    shim,
+    ["inspect", "--json"],
+    testDir,
+    {
+      ...process.env,
+      CODEXFAST_APP_BUNDLE: missingBundle,
+      CODEXFAST_APP_EXECUTABLE: "app\\ChatGPT.exe",
+      CODEXFAST_APP_USER_MODEL_ID: "OpenAI.Codex_codexfastshimtest!App",
+    },
+  );
+  if (inspect.status !== 1 || inspect.stderr) {
+    throw new Error(
+      `Generated codexfast.cmd inspect failure path was not clean: ${inspect.stderr || inspect.stdout}`,
+    );
+  }
+  let inspectReport: { ok?: boolean; error?: { code?: string } };
+  try {
+    inspectReport = JSON.parse(inspect.stdout);
+  } catch (error) {
+    throw new Error(
+      `Generated codexfast.cmd did not preserve inspect --json arguments: ${String(error)}\n${inspect.stdout}`,
+    );
+  }
+  if (
+    inspectReport.ok !== false ||
+    inspectReport.error?.code !== "WINDOWS_APP_DISCOVERY_FAILED"
+  ) {
+    throw new Error(
+      `Generated codexfast.cmd returned an unexpected inspect report: ${inspect.stdout}`,
+    );
+  }
   console.log(`Windows npm shim check passed: codexfast ${packageVersion}`);
 } finally {
   rmSync(testDir, { recursive: true, force: true });
+  rmSync(sourceRoot, { recursive: true, force: true });
 }

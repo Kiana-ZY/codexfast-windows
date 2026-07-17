@@ -207,11 +207,44 @@ export function runCdpFrameSelfTest(): number {
   return 0;
 }
 
-function httpGetJson<T>(url: string): Promise<T> {
+function runtimeConnectionCancelledError(): Error {
+  return new Error("CDP connection cancelled.");
+}
+
+function sleepForRuntimeConnection(
+  milliseconds: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!signal) {
+    return sleep(milliseconds);
+  }
+  if (signal.aborted) {
+    return Promise.reject(runtimeConnectionCancelledError());
+  }
+  return new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    const onAbort = (): void => {
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", onAbort);
+      reject(runtimeConnectionCancelledError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function httpGetJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(runtimeConnectionCancelledError());
+      return;
+    }
     const client = url.startsWith("https:") ? https : http;
     let settled = false;
     let request: http.ClientRequest | null = null;
+    let onAbort: (() => void) | null = null;
     const timeout = setTimeout(() => {
       request?.destroy(new Error(`Timed out fetching ${url}.`));
     }, runtimePatchHttpTimeoutMs);
@@ -221,6 +254,9 @@ function httpGetJson<T>(url: string): Promise<T> {
       }
       settled = true;
       clearTimeout(timeout);
+      if (onAbort) {
+        signal?.removeEventListener("abort", onAbort);
+      }
       callback();
     };
     request = client
@@ -244,6 +280,10 @@ function httpGetJson<T>(url: string): Promise<T> {
         });
       })
       .on("error", (error: Error) => finish(() => reject(error)));
+    if (signal) {
+      onAbort = () => request?.destroy(runtimeConnectionCancelledError());
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
   });
 }
 
@@ -276,8 +316,13 @@ export class CdpConnection {
   static connect(
     webSocketUrl: string,
     expectedPort?: number,
+    signal?: AbortSignal,
   ): Promise<CdpConnection> {
     return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(runtimeConnectionCancelledError());
+        return;
+      }
       const url = new URL(webSocketUrl);
       if (url.protocol !== "ws:") {
         reject(new Error(`Unsupported CDP WebSocket protocol: ${url.protocol}`));
@@ -305,19 +350,31 @@ export class CdpConnection {
       const socket = net.connect({ host: url.hostname, port });
       let handshakeBuffer = Buffer.alloc(0);
       let settled = false;
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      const onAbort = (): void => fail(runtimeConnectionCancelledError());
+
+      const cleanup = (): void => {
+        if (timeout) {
+          clearTimeout(timeout);
+          timeout = null;
+        }
+        signal?.removeEventListener("abort", onAbort);
+      };
 
       const fail = (error: Error): void => {
         if (settled) {
           return;
         }
         settled = true;
+        cleanup();
         socket.destroy();
         reject(error);
       };
 
-      const timeout = setTimeout(() => {
+      timeout = setTimeout(() => {
         fail(new Error("Timed out during CDP WebSocket handshake."));
       }, 3_000);
+      signal?.addEventListener("abort", onAbort, { once: true });
 
       socket.once("connect", () => {
         const path = `${url.pathname}${url.search}`;
@@ -345,7 +402,7 @@ export class CdpConnection {
           return;
         }
 
-        clearTimeout(timeout);
+        cleanup();
         const headerText = handshakeBuffer.subarray(0, headerEnd).toString("utf8");
         const remaining = handshakeBuffer.subarray(headerEnd + 4);
         const statusLine = headerText.split(/\r?\n/, 1)[0] ?? "";
@@ -369,7 +426,6 @@ export class CdpConnection {
       });
 
       socket.once("error", (error: Error) => {
-        clearTimeout(timeout);
         fail(error);
       });
     });
@@ -484,6 +540,7 @@ export class CdpConnection {
 
 export async function waitForRuntimeBrowserConnection(
   debugPort: number,
+  signal?: AbortSignal,
 ): Promise<CdpConnection> {
   const deadline = Date.now() + runtimePatchConnectTimeoutMs;
   let lastError: Error | null = null;
@@ -493,6 +550,7 @@ export async function waitForRuntimeBrowserConnection(
     try {
       const version = await httpGetJson<CdpVersion>(
         `http://127.0.0.1:${debugPort}/json/version`,
+        signal,
       );
       debuggerResponded = true;
       if (version.webSocketDebuggerUrl) {
@@ -501,6 +559,7 @@ export async function waitForRuntimeBrowserConnection(
           return await CdpConnection.connect(
             version.webSocketDebuggerUrl,
             debugPort,
+            signal,
           );
         } catch (error) {
           lastError = asError(error);
@@ -509,7 +568,7 @@ export async function waitForRuntimeBrowserConnection(
     } catch (error) {
       lastError = asError(error);
     }
-    await sleep(100);
+    await sleepForRuntimeConnection(100, signal);
   }
 
   const detail = lastError ? `: ${lastError.message}` : "";
@@ -519,8 +578,14 @@ export async function waitForRuntimeBrowserConnection(
   throw new Error(`${reason} after bounded retries${detail}`);
 }
 
-async function findDebuggableRendererTarget(debugPort: number): Promise<CdpTarget | null> {
-  const targets = await httpGetJson<CdpTarget[]>(`http://127.0.0.1:${debugPort}/json/list`);
+async function findDebuggableRendererTarget(
+  debugPort: number,
+  signal?: AbortSignal,
+): Promise<CdpTarget | null> {
+  const targets = await httpGetJson<CdpTarget[]>(
+    `http://127.0.0.1:${debugPort}/json/list`,
+    signal,
+  );
   return (
     targets.find((target) => target.webSocketDebuggerUrl && target.url.startsWith("app://") && target.type !== "browser") ??
     targets.find((target) => target.webSocketDebuggerUrl && target.type !== "browser") ??
@@ -528,7 +593,10 @@ async function findDebuggableRendererTarget(debugPort: number): Promise<CdpTarge
   );
 }
 
-export async function waitForRuntimePatchConnection(debugPort: number): Promise<CdpConnection> {
+export async function waitForRuntimePatchConnection(
+  debugPort: number,
+  signal?: AbortSignal,
+): Promise<CdpConnection> {
   const deadline = Date.now() + runtimePatchConnectTimeoutMs;
   let lastError: Error | null = null;
   let debuggerResponded = false;
@@ -536,7 +604,7 @@ export async function waitForRuntimePatchConnection(debugPort: number): Promise<
 
   while (Date.now() < deadline) {
     try {
-      const target = await findDebuggableRendererTarget(debugPort);
+      const target = await findDebuggableRendererTarget(debugPort, signal);
       if (target?.webSocketDebuggerUrl) {
         debugRuntime(`connecting target type=${target.type} url=${target.url}`);
         debuggerResponded = true;
@@ -545,6 +613,7 @@ export async function waitForRuntimePatchConnection(debugPort: number): Promise<
           return await CdpConnection.connect(
             target.webSocketDebuggerUrl,
             debugPort,
+            signal,
           );
         } catch (error) {
           lastError = asError(error);
@@ -555,7 +624,7 @@ export async function waitForRuntimePatchConnection(debugPort: number): Promise<
     } catch (error) {
       lastError = asError(error);
     }
-    await sleep(250);
+    await sleepForRuntimeConnection(250, signal);
   }
 
   if (debuggerResponded && !rendererTargetFound) {

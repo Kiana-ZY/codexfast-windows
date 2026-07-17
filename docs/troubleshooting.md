@@ -6,29 +6,36 @@ This document collects the recurring failure modes for the current public `codex
 
 Expected behavior:
 
-- `npx codexfast launch` is the public runtime path.
+- `node ./bin/codexfast launch` is the public runtime path for this clone.
 - It starts Codex with a local CDP endpoint and applies runtime patches only to that launched session.
 - Keep the `codexfast launch` process running while you use Codex. Settings and Plugins load some chunks lazily, and those later requests still need the runtime interceptor.
 - During initial startup, the launcher connects to the browser-level CDP target, auto-attaches to renderer targets with `waitForDebuggerOnStart`, enables `Fetch` interception in the renderer session, and then lets the renderer continue. If a required target for the current build is still not observed, launch retries one renderer reload and then fails closed instead of repeatedly refreshing the app. Older builds require `Plugins access`; `26.601.21317`, `26.602.30954`, `26.602.40724`, `26.602.71036`, `26.608.12217`, `26.609.30741`, `26.609.41114`, `26.609.71450`, `26.611.61049`, `26.611.61753`, `26.611.62324`, `26.616.31447`, `26.616.51431`, `26.616.71553`, `26.616.81150`, `26.623.31443`, `26.623.31921`, `26.623.42026`, `26.623.61825`, `26.623.70822`, `26.623.81905`, `26.623.101652`, and `26.623.141536` do not require that legacy target because the old sidebar/page/detail gates are absent or Plugins is supported by the official app path.
-- The launcher sends a lightweight browser-level CDP heartbeat. If the runtime patch session drops, it reconnects at most three times and re-enables browser auto-attach. If reconnects are exhausted, it reports `Runtime patch session lost`, closes the launched Codex process, and exits non-zero so Codex does not keep running without runtime patching.
+- The launcher sends a lightweight browser-level CDP heartbeat. If the runtime patch session drops, it reconnects at most three times, re-enables browser auto-attach, reloads an already-running app renderer when needed, preloads the dynamic resources, and requires every target again within a 15-second wall-clock observation window. Old-generation Fetch callbacks are ignored. If reconnects are exhausted, it reports `Runtime patch session lost`, closes the launched Codex process, and exits non-zero so Codex does not keep running without runtime patching.
 - It does not modify `app.asar`, `Info.plist`, the app bundle, the app signature, backups, or macOS privacy permissions.
 - It removes the legacy launchd auto-repair watcher if an older codexfast version installed one.
 
 If launch is blocked:
 
 1. Fully quit any running `Codex.app` instance.
-2. Re-run `npx codexfast launch`.
+2. Re-run `node ./bin/codexfast launch`.
 3. Use the detected version/build printed by launch when recording an unsupported build for adaptation.
+
+If the Windows desktop shortcut or tray does not start the expected clone:
+
+1. Read `logs\launcher.log` under that clone. The tray does not write to `%LOCALAPPDATA%\codexfast`.
+2. Re-run `scripts\install-windows-shortcut.ps1` after moving the clone or changing Node.js to a different executable path. The shortcut intentionally stores the absolute `node.exe` path resolved during installation.
+3. A second invocation for the same clone signals the existing tray instead of creating another launcher. Different clone paths have different mutex/event identities; if an old tray remains, exit it after its launcher reaches `Stopped`.
+4. No administrator PowerShell is required. A missing Node path or unresponsive tray is reported instead of triggering UAC.
 
 If Settings Fast or Plugins content is still missing after launch:
 
-1. Confirm the terminal process that ran `npx codexfast launch` is still running.
-2. Fully quit Codex, rerun `npx codexfast launch`, and keep that process open while navigating to Settings and Plugins.
+1. Confirm the terminal process that ran `node ./bin/codexfast launch` is still running.
+2. Fully quit Codex, rerun `node ./bin/codexfast launch`, and keep that process open while navigating to Settings and Plugins.
 3. If the process is still running and the build is supported, inspect runtime debug output for lazy chunk matches such as `general-settings-*.js` and `skills-page-*.js`.
 
 If Settings Fast, `/fast`, and the composer Speed menu all disappear after account switching:
 
-1. Confirm `npx codexfast launch` is still running and the expected Fast patch labels were reported. If the launcher is gone, lazy chunks can load without runtime patches.
+1. Confirm `node ./bin/codexfast launch` is still running and the expected Fast patch labels were reported. If the launcher is gone, lazy chunks can load without runtime patches.
 2. Inspect the app config through the live bridge, especially the current `read-config-for-host` model and `service_tier` values.
 3. Inspect `list-models-for-host` and compare the selected model's `serviceTiers` / `additionalSpeedTiers` with another known Fast-capable model. On the `26.623.70822` failure mode, account switching left `model = "gpt-5.5"` and `service_tier = "default"`, while official `gpt-5.5` had no Fast service-tier metadata and `gpt-5.4` still had `{ id: "priority", name: "Fast" }`.
 4. If the selected model is visible but lacks Fast metadata, inspect `src/targets/models.mts` and the runtime match for `GPT-5.5 model list`, not only `src/targets/speed.mts`. Current `26.623.70822` bundles can expose the bridge handler from `app-initial~app-main~automations-page-*.js` as ``"list-models-for-host":n9((e,t)=>e.sendRequest(`model/list`,t))``.
@@ -55,13 +62,14 @@ If `Disable automatic updates` is enabled but Codex still updates:
 If launch reports `Runtime patch session lost after 3 reconnect attempts`:
 
 1. Fully quit Codex and confirm no `Codex` main process remains.
-2. Re-run `npx codexfast launch`.
+2. Re-run `node ./bin/codexfast launch`.
 3. Do not keep using any remaining Codex window as proof of runtime patch behavior; reconnects were exhausted, so codexfast deliberately closed the launched process instead of allowing an unpatched session to continue.
+4. Check the preceding reconnect-attempt line. Missing renderer binding, missing required labels, response origin/path/hash mismatches, CDP command timeouts, and the 15-second reconnect observation deadline are all fail-closed causes.
 
 If Codex shows `Codex failed to start` with `ERR_FAILED` while runtime launch is being tested:
 
 1. Fully quit Codex and confirm no `Codex` main process remains.
-2. Re-run the latest `npx codexfast launch`.
+2. Re-run the latest `node ./bin/codexfast launch`.
 3. Confirm the failed launch did not change `Contents/Resources/app.asar`, `Info.plist`, the app signature, backups, or macOS privacy permissions.
 4. If the failure persists on a supported build, inspect the CDP runtime asset URL shape. Current `26.513.20950` requests renderer JavaScript as `app://-/assets/*.js`, while older assumptions used `app://-/webview/assets/*.js`.
 5. Confirm the generated single-file CLI can run its embedded runtime patch engine; do not rely only on source-level `patch-engine` imports.
@@ -104,7 +112,7 @@ Relevant boundary:
 
 Recovery:
 
-- Fully quit and relaunch Codex through `npx codexfast launch`.
+- Fully quit and relaunch Codex through `node ./bin/codexfast launch`.
 - If the installed app was previously modified and ad-hoc signed by an older bundle patch flow, reinstall the official Codex.app build to recover the OpenAI Developer ID signature.
 
 ## `Compatibility: unsupported`
@@ -125,5 +133,5 @@ What to do:
 Current `codexfast` no longer includes legacy bundle patch, archive rewrite, re-sign, or restore flows. If an old run left `Resources/app`, `app.asar1`, or `*.codexfast.bak` files behind, do not use the current launcher to repair the app bundle:
 
 - Reinstall the official Codex.app build to recover a clean bundle and OpenAI Developer ID signature.
-- Use `npx codexfast launch` after reinstalling; it applies runtime patches without writing the app bundle.
+- Use `node ./bin/codexfast launch` after reinstalling; it applies runtime patches without writing the app bundle.
 - The hidden `repair` compatibility command only removes old watcher files. It does not inspect, patch, restore, or re-sign Codex.app.

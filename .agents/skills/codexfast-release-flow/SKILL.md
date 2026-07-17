@@ -1,135 +1,71 @@
 ---
 name: codexfast-release-flow
-description: Use when preparing, validating, committing, publishing, or verifying a codexfast npm release from the codexfast repository.
+description: Use when preparing, validating, tagging, publishing, or verifying a GitHub-only codexfast-windows release from this repository. This repository is private in package metadata and must never be published to npm under the upstream codexfast package name.
 ---
 
-# Codexfast Release Flow
+# CodexFast Release Flow
 
 ## Overview
 
-Use this skill when shipping a `codexfast` release.
+Prepare a verified source release, Git tag, and GitHub release for this independent repository. Never publish this repository to npm.
 
-The goal is to turn the current repo state into a verified npm package without losing changelog accuracy or publishing the wrong version.
+Use `codexfast-development-flow` first for implementation work. Run release actions only when the maintainer explicitly requests them.
 
-## When To Use
+## Hard Boundaries
 
-- Bumping the package version
-- Converting `Unreleased` changes into a dated release entry
-- Preparing a release commit
-- Running package registry and publish checks
-- Publishing `codexfast` to npm
-- Verifying whether a version is already live
-
-Do not use this skill for feature implementation. Use `codexfast-development-flow` first, then return here when the code is ready to ship.
+- Keep `package.json` set to `private: true`.
+- Do not run `pnpm publish`, `npm publish`, or registry mutation commands.
+- Do not imply that `npx codexfast` installs this repository; that package name belongs to upstream.
+- Do not create or move a tag, push, or create a GitHub release without explicit user authorization.
+- Preserve `LICENSE` and `UPSTREAM.md` attribution.
 
 ## Version Selection
 
-`codexfast` uses `vx.y.z` Git tags, where `v` is only the tag prefix and `x.y.z` is the npm SemVer version.
-
-Choose the version before editing release metadata:
-
-- Use a patch release, such as `0.9.1`, for fixes to behavior that was already shipped and claimed supported:
-  - patch-signature corrections for an already supported Codex build
-  - newly discovered gates, regexes, or target specs needed to complete a feature path that was already claimed supported
-  - fixes to an already supported Fast, Speed, `/fast`, GPT-5.5, or Plugins path
-  - runtime launch, generated CLI, hidden watcher cleanup, command dispatch, or packaging fixes
-  - documentation corrections that do not change supported behavior
-- Treat implementation-level patch targets as release mechanics, not automatic version-scope expansion. If they only make an already promised feature work correctly on an already supported build, choose patch.
-- Use a minor release, such as `0.10.0`, for any new user-visible supported capability or compatibility surface:
-  - newly supported `Codex.app` version/build pairs
-  - newly supported feature paths, UI surfaces, or user-visible commands that were not previously claimed supported
-  - behavior that expands the supported custom-API feature set
-- If one release contains both a feature and a fix, choose the higher level: minor.
-- Even while the package is `0.x`, do not treat new compatibility support as patch-level maintenance. New Codex build support is a compatibility expansion and should be minor.
-- Do not skip version numbers just to repair release confusion. Once a version is published to npm or tagged publicly, leave it immutable and choose the next correct version.
+- Use a patch version for corrections to behavior already claimed by this independent repository.
+- Use a minor version for a new supported Codex build, feature path, public command, or compatibility surface.
+- Use the higher level when one release contains both.
+- Never reuse or move an already public version/tag to hide a mistake.
 
 ## Release Workflow
 
-1. Confirm the repo is ready.
-   - Review `git status --short --branch`.
-   - Make sure the intended feature work, docs, and tests are already in place.
+1. Confirm the intended code, generated CLI, tests, docs, and manual-validation status are complete. Review `git status --short --branch` and the pending diff.
 
-2. Prepare release metadata.
-   - Classify the release using the Version Selection rules before changing files.
-   - Bump `package.json` to the target version.
-   - Move the active unreleased notes in `CHANGELOG.md` into a dated version section.
-   - Keep README references aligned if usage or release behavior changed.
+2. Update release metadata:
+   - bump `package.json` only to the approved independent version;
+   - move `CHANGELOG.md` unreleased entries into a dated section;
+   - align README and compatibility documentation;
+   - keep `private: true` unchanged.
 
-3. Run release verification.
-   - Run `pnpm build:check`.
-   - Run `pnpm typecheck`.
-   - Run `pnpm test`.
-   - Run `pnpm pack --dry-run`.
-   - Before publishing, check the registry state with:
-     - `pnpm view codexfast version versions --json`
+3. Run verification:
 
-4. Commit the release state.
-   - Use a conventional commit, usually `chore: release x.y.z` unless the user asked for a different message.
+```text
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm build
+pnpm build:check
+pnpm test
+pnpm check:windows-shim
+pnpm pack --dry-run
+git diff --check
+```
 
-5. Prepare the Git tag.
-   - Confirm the release tag exists as `vx.y.z`.
-   - Confirm the tag points at the intended release commit, not a later docs-only commit.
-   - Push any missing release tag to `origin` before creating or editing the GitHub release.
+Treat `pnpm pack --dry-run` only as package-content inspection. It does not authorize npm publication.
 
-6. Publish.
-   - Run `pnpm publish`.
-   - If npm rejects the publish, read the exact registry error before changing anything.
+4. Review the generated `bin/codexfast`, package contents, personal-path searches, and the distinction between automated checks and pending real-app validation.
 
-7. Create or update the GitHub release.
-   - Use `gh release create` or `gh release edit`.
-   - Make sure every published tag has release notes on GitHub, not just a tag with no release body.
-   - Keep the GitHub release title and notes aligned with the changelog entry for that version.
-   - Default behavior: do not upload extra release assets.
-   - If release assets are needed, prefer the `pnpm pack` tarball for that exact version and confirm it matches the published npm artifact before uploading.
+5. Commit only when requested, using `chore: release x.y.z`.
 
-8. Verify the publish result.
-   - Re-check `pnpm view codexfast version versions --json`.
-   - Re-check `gh release list`.
-   - If npm says the version already exists, compare the published tarball metadata with local packaging:
-     - `pnpm view codexfast@x.y.z dist.shasum dist.integrity --json`
-     - `pnpm pack --dry-run`
-   - Only describe the release as successful if:
-     - the npm registry confirms it or the existing published tarball matches the local artifact exactly
-     - the expected GitHub tag exists remotely
-     - the expected GitHub release entry exists with notes
+6. Create and push the independent `vx.y.z` tag only when requested. Confirm it points to the intended release commit and does not reuse an upstream tag.
 
-## Publish Error Handling
+7. Create or update the GitHub release only when requested. Keep release notes aligned with the changelog and state which real-app checks remain manual. Do not upload extra assets by default.
 
-- `E403` with “version already exists”:
-  - Do not force re-publish.
-  - Compare registry `dist.shasum` and `dist.integrity` against local `pnpm pack --dry-run`.
-  - If they match, report that the release is already live.
-  - If they do not match, bump to a new version and publish that instead.
-
-- Tag exists but GitHub release is missing or empty:
-  - Do not retag a different commit silently.
-  - Confirm the tag target first.
-  - Then create or edit the GitHub release body for that tag.
-
-- `E403` mentioning 2FA or token policy:
-  - The account or token is not allowed to publish yet.
-  - Do not bump versions blindly until auth is fixed.
-
-## Final Checks
-
-- `package.json` version matches the intended release.
-- `CHANGELOG.md` has the correct dated section.
-- The regression suite passed before publish.
-- The npm package contents look correct.
-- Registry state is verified after publish.
-- The expected `vx.y.z` tag exists on `origin`.
-- The GitHub release entry exists and contains notes.
-- If any manual release asset was uploaded, it matches the exact package version and artifact checksum expectations.
+8. Verify the remote tag and GitHub release with `git ls-remote --tags origin` and `gh release view`. A source release is complete only when the expected tag points to the intended commit and the GitHub release contains the expected notes.
 
 ## Common Mistakes
 
-- Publishing without checking whether the target version already exists.
-- Publishing to npm but forgetting to push the release tag.
-- Having GitHub tags without corresponding GitHub release notes.
-- Uploading a manual GitHub release asset that does not match the npm package for the same version.
-- Forgetting to move `Unreleased` notes into a concrete version section.
-- Claiming publish success from `pnpm publish` start logs instead of registry confirmation.
-- Forgetting that docs and changelog are part of the release payload, not optional cleanup.
-- Treating new `Codex.app` build support or new user-visible feature paths as patch releases.
-- Treating every new target spec or regex as minor even when it only fixes an already claimed supported feature.
-- Retagging or republishing an already public version to hide a previous version-selection mistake.
+- Running an npm publish or registry check copied from upstream workflow.
+- Removing `private: true` without a separate package-name and distribution review.
+- Claiming `npx codexfast` installs this Windows adaptation.
+- Publishing a GitHub release before the generated CLI and full regression suite pass.
+- Describing static `inspect` success as real-app validation.
+- Tagging a later docs-only commit instead of the approved release commit.

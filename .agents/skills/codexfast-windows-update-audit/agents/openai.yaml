@@ -1,0 +1,6 @@
+interface:
+  display_name: "CodexFast Windows Update Audit"
+  short_description: "Read-only Codex MSIX compatibility audit"
+  default_prompt: "Use $codexfast-windows-update-audit to audit the installed Windows Codex MSIX without launching or modifying it."
+policy:
+  allow_implicit_invocation: true

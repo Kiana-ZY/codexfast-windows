@@ -520,11 +520,39 @@ function runCdpFrameSelfTest() {
     printLine("CDP frame self-test passed");
     return 0;
 }
-function httpGetJson(url) {
+function runtimeConnectionCancelledError() {
+    return new Error("CDP connection cancelled.");
+}
+function sleepForRuntimeConnection(milliseconds, signal) {
+    if (!signal) {
+        return sleep(milliseconds);
+    }
+    if (signal.aborted) {
+        return Promise.reject(runtimeConnectionCancelledError());
+    }
     return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            signal.removeEventListener("abort", onAbort);
+            resolve();
+        }, milliseconds);
+        const onAbort = () => {
+            clearTimeout(timeout);
+            signal.removeEventListener("abort", onAbort);
+            reject(runtimeConnectionCancelledError());
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+    });
+}
+function httpGetJson(url, signal) {
+    return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(runtimeConnectionCancelledError());
+            return;
+        }
         const client = url.startsWith("https:") ? https : http;
         let settled = false;
         let request = null;
+        let onAbort = null;
         const timeout = setTimeout(() => {
             request?.destroy(new Error(`Timed out fetching ${url}.`));
         }, runtimePatchHttpTimeoutMs);
@@ -534,6 +562,9 @@ function httpGetJson(url) {
             }
             settled = true;
             clearTimeout(timeout);
+            if (onAbort) {
+                signal?.removeEventListener("abort", onAbort);
+            }
             callback();
         };
         request = client
@@ -557,6 +588,10 @@ function httpGetJson(url) {
             });
         })
             .on("error", (error) => finish(() => reject(error)));
+        if (signal) {
+            onAbort = () => request?.destroy(runtimeConnectionCancelledError());
+            signal.addEventListener("abort", onAbort, { once: true });
+        }
     });
 }
 class CdpConnection {
@@ -585,8 +620,12 @@ class CdpConnection {
             this.readFrames(initialBuffer);
         }
     }
-    static connect(webSocketUrl, expectedPort) {
+    static connect(webSocketUrl, expectedPort, signal) {
         return new Promise((resolve, reject) => {
+            if (signal?.aborted) {
+                reject(runtimeConnectionCancelledError());
+                return;
+            }
             const url = new URL(webSocketUrl);
             if (url.protocol !== "ws:") {
                 reject(new Error(`Unsupported CDP WebSocket protocol: ${url.protocol}`));
@@ -609,17 +648,28 @@ class CdpConnection {
             const socket = net.connect({ host: url.hostname, port });
             let handshakeBuffer = Buffer.alloc(0);
             let settled = false;
+            let timeout = null;
+            const onAbort = () => fail(runtimeConnectionCancelledError());
+            const cleanup = () => {
+                if (timeout) {
+                    clearTimeout(timeout);
+                    timeout = null;
+                }
+                signal?.removeEventListener("abort", onAbort);
+            };
             const fail = (error) => {
                 if (settled) {
                     return;
                 }
                 settled = true;
+                cleanup();
                 socket.destroy();
                 reject(error);
             };
-            const timeout = setTimeout(() => {
+            timeout = setTimeout(() => {
                 fail(new Error("Timed out during CDP WebSocket handshake."));
             }, 3_000);
+            signal?.addEventListener("abort", onAbort, { once: true });
             socket.once("connect", () => {
                 const path = `${url.pathname}${url.search}`;
                 socket.write([
@@ -642,7 +692,7 @@ class CdpConnection {
                 if (headerEnd === -1) {
                     return;
                 }
-                clearTimeout(timeout);
+                cleanup();
                 const headerText = handshakeBuffer.subarray(0, headerEnd).toString("utf8");
                 const remaining = handshakeBuffer.subarray(headerEnd + 4);
                 const statusLine = headerText.split(/\r?\n/, 1)[0] ?? "";
@@ -663,7 +713,6 @@ class CdpConnection {
                 resolve(new CdpConnection(socket, remaining));
             });
             socket.once("error", (error) => {
-                clearTimeout(timeout);
                 fail(error);
             });
         });
@@ -762,18 +811,18 @@ class CdpConnection {
         this.pending.clear();
     }
 }
-async function waitForRuntimeBrowserConnection(debugPort) {
+async function waitForRuntimeBrowserConnection(debugPort, signal) {
     const deadline = Date.now() + runtimePatchConnectTimeoutMs;
     let lastError = null;
     let debuggerResponded = false;
     while (Date.now() < deadline) {
         try {
-            const version = await httpGetJson(`http://127.0.0.1:${debugPort}/json/version`);
+            const version = await httpGetJson(`http://127.0.0.1:${debugPort}/json/version`, signal);
             debuggerResponded = true;
             if (version.webSocketDebuggerUrl) {
                 debugRuntime("connecting browser target");
                 try {
-                    return await CdpConnection.connect(version.webSocketDebuggerUrl, debugPort);
+                    return await CdpConnection.connect(version.webSocketDebuggerUrl, debugPort, signal);
                 }
                 catch (error) {
                     lastError = asError(error);
@@ -783,7 +832,7 @@ async function waitForRuntimeBrowserConnection(debugPort) {
         catch (error) {
             lastError = asError(error);
         }
-        await sleep(100);
+        await sleepForRuntimeConnection(100, signal);
     }
     const detail = lastError ? `: ${lastError.message}` : "";
     const reason = debuggerResponded
@@ -791,26 +840,26 @@ async function waitForRuntimeBrowserConnection(debugPort) {
         : "CDP browser endpoint unavailable";
     throw new Error(`${reason} after bounded retries${detail}`);
 }
-async function findDebuggableRendererTarget(debugPort) {
-    const targets = await httpGetJson(`http://127.0.0.1:${debugPort}/json/list`);
+async function findDebuggableRendererTarget(debugPort, signal) {
+    const targets = await httpGetJson(`http://127.0.0.1:${debugPort}/json/list`, signal);
     return (targets.find((target) => target.webSocketDebuggerUrl && target.url.startsWith("app://") && target.type !== "browser") ??
         targets.find((target) => target.webSocketDebuggerUrl && target.type !== "browser") ??
         null);
 }
-async function waitForRuntimePatchConnection(debugPort) {
+async function waitForRuntimePatchConnection(debugPort, signal) {
     const deadline = Date.now() + runtimePatchConnectTimeoutMs;
     let lastError = null;
     let debuggerResponded = false;
     let rendererTargetFound = false;
     while (Date.now() < deadline) {
         try {
-            const target = await findDebuggableRendererTarget(debugPort);
+            const target = await findDebuggableRendererTarget(debugPort, signal);
             if (target?.webSocketDebuggerUrl) {
                 debugRuntime(`connecting target type=${target.type} url=${target.url}`);
                 debuggerResponded = true;
                 rendererTargetFound = true;
                 try {
-                    return await CdpConnection.connect(target.webSocketDebuggerUrl, debugPort);
+                    return await CdpConnection.connect(target.webSocketDebuggerUrl, debugPort, signal);
                 }
                 catch (error) {
                     lastError = asError(error);
@@ -823,7 +872,7 @@ async function waitForRuntimePatchConnection(debugPort) {
         catch (error) {
             lastError = asError(error);
         }
-        await sleep(250);
+        await sleepForRuntimeConnection(250, signal);
     }
     if (debuggerResponded && !rendererTargetFound) {
         throw new Error("No debuggable renderer target found.");
@@ -968,6 +1017,228 @@ function createCodexfastContext(appBundle = process.env.CODEXFAST_APP_BUNDLE, pl
         toolchain: emptyToolchain(),
         runtimeCompatibility: emptyRuntimeCompatibilityProfile(),
     };
+}
+function parseInspectArguments(args) {
+    const jsonCount = args.filter((arg) => arg === "--json").length;
+    const unsupported = args.filter((arg) => arg !== "--json");
+    if (unsupported.length > 0) {
+        return {
+            json: jsonCount > 0,
+            error: `Unknown inspect option: ${unsupported.join(", ")}.`,
+        };
+    }
+    if (jsonCount > 1) {
+        return {
+            json: true,
+            error: "inspect accepts --json at most once.",
+        };
+    }
+    return { json: jsonCount === 1, error: null };
+}
+function inspectScope() {
+    return {
+        readOnly: true,
+        codexLaunched: false,
+        runtimeVerificationPerformed: false,
+        providerConfigurationInspected: false,
+    };
+}
+function inspectSelection(environment) {
+    return {
+        overrides: {
+            bundle: Boolean(environment.CODEXFAST_APP_BUNDLE?.trim()),
+            executable: Boolean(environment.CODEXFAST_APP_EXECUTABLE?.trim()),
+            appUserModelId: Boolean(environment.CODEXFAST_APP_USER_MODEL_ID?.trim()),
+        },
+    };
+}
+function inspectPackage(context) {
+    if (!context.metadata.packageName) {
+        return null;
+    }
+    return {
+        name: context.metadata.packageName,
+        packageFullName: context.metadata.packageFullName,
+        version: context.metadata.version,
+        versionKey: context.metadata.versionKey,
+        publisher: context.metadata.publisher,
+        packageFamilyName: context.metadata.packageFamilyName,
+        applicationId: context.metadata.applicationId,
+        appUserModelId: context.metadata.appUserModelId,
+        registrationVerified: context.metadata.packageRegistrationVerified,
+        registeredInstallLocations: [
+            ...context.metadata.registeredPackageInstallLocations,
+        ],
+    };
+}
+function inspectPaths(context) {
+    if (!context.paths.bundle) {
+        return null;
+    }
+    return {
+        bundle: context.paths.bundle,
+        resources: context.paths.resources,
+        appxManifest: context.paths.appxManifest,
+        executable: context.paths.executable,
+        appAsar: context.paths.appAsar,
+    };
+}
+function baseInspectReport(context, packageVersion, environment) {
+    return {
+        schemaVersion: 1,
+        command: "inspect",
+        tool: {
+            name: "codexfast-windows",
+            version: packageVersion,
+        },
+        platform: context.platform,
+        scope: inspectScope(),
+        selection: inspectSelection(environment),
+        package: inspectPackage(context),
+        paths: inspectPaths(context),
+    };
+}
+function createInspectFailureReport(context, packageVersion, environment, error) {
+    return {
+        ...baseInspectReport(context, packageVersion, environment),
+        ok: false,
+        compatibility: null,
+        snapshots: null,
+        resourcePaths: [],
+        targets: [],
+        error,
+    };
+}
+function createInspectSuccessReport(context, packageVersion, environment) {
+    const profile = context.runtimeCompatibility;
+    if (profile.source !== "whitelist-signatures" &&
+        profile.source !== "signature-compatible-update") {
+        throw new Error("Windows runtime compatibility profile is missing.");
+    }
+    return {
+        ...baseInspectReport(context, packageVersion, environment),
+        ok: true,
+        compatibility: {
+            source: profile.source,
+            classification: profile.source === "whitelist-signatures"
+                ? "recorded-static-pass"
+                : "unlisted-signature-compatible",
+            description: context.metadata.compatibility,
+            staticGatePassed: true,
+            runtimeVerificationRequired: true,
+            requiredTargetCount: profile.targets.length,
+            verifiedTargetCount: profile.targets.length,
+        },
+        snapshots: {
+            appxManifest: {
+                path: context.paths.appxManifest,
+                sha256: profile.appxManifestSha256,
+                size: profile.appxManifestSize,
+                mtimeMs: profile.appxManifestMtimeMs,
+            },
+            appAsar: {
+                path: context.paths.appAsar,
+                sha256: profile.appAsarSha256,
+                size: profile.appAsarSize,
+                mtimeMs: profile.appAsarMtimeMs,
+            },
+            appxSignatureFile: {
+                path: profile.appxSignaturePath,
+                sha256: profile.appxSignatureSha256,
+                size: profile.appxSignatureSize,
+                mtimeMs: profile.appxSignatureMtimeMs,
+            },
+        },
+        resourcePaths: [...profile.resourcePaths],
+        targets: profile.targets.map((target) => ({ ...target })),
+        error: null,
+    };
+}
+function writeInspectJson(writeLine, report) {
+    writeLine(JSON.stringify(report, null, 2));
+}
+function runInspectCommand(options) {
+    const environment = options.environment ?? process.env;
+    const writeLine = options.writeLine ?? printLine;
+    const parsed = parseInspectArguments(options.args);
+    if (parsed.error) {
+        const error = {
+            stage: "arguments",
+            code: "INVALID_ARGUMENTS",
+            message: parsed.error,
+        };
+        if (parsed.json) {
+            writeInspectJson(writeLine, createInspectFailureReport(options.context, options.packageVersion, environment, error));
+        }
+        else {
+            writeLine(error.message);
+            writeLine("Usage: codexfast inspect [--json]");
+        }
+        return 1;
+    }
+    if (options.context.platform !== "win32") {
+        const error = {
+            stage: "platform",
+            code: "UNSUPPORTED_PLATFORM",
+            message: "The inspect command is currently available for Windows MSIX only.",
+        };
+        if (parsed.json) {
+            writeInspectJson(writeLine, createInspectFailureReport(options.context, options.packageVersion, environment, error));
+        }
+        else {
+            writeLine(error.message);
+        }
+        return 1;
+    }
+    const loadEnvironment = options.loadEnvironment ?? loadWindowsAppEnvironment;
+    try {
+        loadEnvironment(options.context, options.supportedWindowsAppVersions, undefined, environment);
+    }
+    catch (caught) {
+        const error = {
+            stage: "discovery",
+            code: "WINDOWS_APP_DISCOVERY_FAILED",
+            message: asError(caught).message,
+        };
+        if (parsed.json) {
+            writeInspectJson(writeLine, createInspectFailureReport(options.context, options.packageVersion, environment, error));
+        }
+        else {
+            writeLine(`Windows app discovery failed: ${error.message}`);
+        }
+        return 1;
+    }
+    const applyCompatibility = options.applyCompatibility ??
+        applyWindowsRuntimeCompatibility;
+    try {
+        applyCompatibility(options.context, options.patcherSource, options.supportedWindowsAppVersions);
+    }
+    catch (caught) {
+        const error = {
+            stage: "compatibility",
+            code: "WINDOWS_RUNTIME_COMPATIBILITY_FAILED",
+            message: asError(caught).message,
+        };
+        if (parsed.json) {
+            writeInspectJson(writeLine, createInspectFailureReport(options.context, options.packageVersion, environment, error));
+        }
+        else {
+            writeLine(`Windows runtime compatibility failed: ${error.message}`);
+        }
+        return 1;
+    }
+    if (parsed.json) {
+        writeInspectJson(writeLine, createInspectSuccessReport(options.context, options.packageVersion, environment));
+        return 0;
+    }
+    options.printActionHeader();
+    writeLine("Verified runtime target resources:");
+    for (const target of options.context.runtimeCompatibility.targets) {
+        writeLine(`  ${target.label} [${target.id}] ${target.state} ${target.archivePath} -> ${target.runtimePath}`);
+    }
+    writeLine("");
+    writeLine("Compatibility inspection completed without launching Codex.");
+    return 0;
 }
 function printActionHeaderBlock(action, details) {
     printLine("");
@@ -1377,13 +1648,13 @@ function validateWindowsPackageIdentity(bundle, manifest, packageCandidate, pars
         throw new Error(`MSIX registration identity ${packageCandidate.packageFullName} / ${packageCandidate.packageFamilyName} does not match WindowsApps path identity ${parsedPackagePath.packageDirectoryName} / ${parsedPackagePath.packageFamilyName}.`);
     }
 }
-function loadWindowsAppEnvironment(context, supportedWindowsAppVersions, runner = run) {
+function loadWindowsAppEnvironment(context, supportedWindowsAppVersions, runner = run, environment = process.env) {
     const powershell = resolveWindowsPowerShell();
     if (!powershell) {
         throw new Error("Windows PowerShell was not found. codexfast does not request administrator privileges; install/restore Windows PowerShell or set the Windows app overrides after it is available.");
     }
     context.toolchain.powershell = powershell;
-    const configuredBundle = process.env.CODEXFAST_APP_BUNDLE?.trim() ||
+    const configuredBundle = environment.CODEXFAST_APP_BUNDLE?.trim() ||
         context.paths.bundle.trim();
     let packageCandidate = null;
     let bundle = configuredBundle;
@@ -1437,11 +1708,11 @@ function loadWindowsAppEnvironment(context, supportedWindowsAppVersions, runner 
     }
     const parsedPackagePath = parseWindowsAppsPackagePath(bundle);
     validateWindowsPackageIdentity(bundle, manifest, packageCandidate, parsedPackagePath);
-    const configuredAumid = process.env.CODEXFAST_APP_USER_MODEL_ID?.trim() ?? "";
+    const configuredAumid = environment.CODEXFAST_APP_USER_MODEL_ID?.trim() ?? "";
     if (configuredAumid && !/^[^!]+![^!]+$/u.test(configuredAumid)) {
         throw new Error("CODEXFAST_APP_USER_MODEL_ID must use the PackageFamilyName!ApplicationId form.");
     }
-    const configuredExecutable = process.env.CODEXFAST_APP_EXECUTABLE;
+    const configuredExecutable = environment.CODEXFAST_APP_EXECUTABLE;
     const application = selectManifestApplication(manifest, configuredExecutable, applicationIdFromAumid(configuredAumid));
     const executable = executablePathForWindowsApp(bundle, application.executable, configuredExecutable);
     const resources = (0, node_path_1.join)((0, node_path_2.dirname)(executable), "resources");
@@ -2341,16 +2612,19 @@ const runtimePatchInitialTargetTimeoutMs = 45_000;
 const runtimePatchNoTargetIdleMs = 2_500;
 const runtimePatchSettleMs = 750;
 const runtimePatchInitialLoadSettleMs = 1_000;
+const runtimePatchCommandTimeoutMs = 10_000;
+const runtimePatchBrowserConnectTimeoutMs = 15_000;
 const runtimePatchHeartbeatIntervalMs = 5_000;
 const runtimePatchHeartbeatTimeoutMs = 2_000;
 const runtimePatchReconnectMaxAttempts = 3;
 const runtimePatchReconnectDelayMs = 1_000;
-const runtimePatchReconnectAttachMaxAttempts = 10;
-const runtimePatchReconnectAttachDelayMs = 100;
+const runtimePatchReconnectObservationTimeoutMs = 15_000;
+const runtimePatchReconnectObservationPollMs = 100;
 const runtimePatchPreloadMaxAttempts = 3;
 const runtimePatchPreloadRetryDelayMs = 100;
 const runtimePatchRendererOriginMaxAttempts = 100;
 const runtimePatchRendererOriginRetryDelayMs = 50;
+const runtimePatchRendererLocationTimeoutMs = 1_000;
 const runtimePatchDefaultRequiredInitialLabels = ["Plugins access"];
 const runtimePatchNoPluginsAccessRequiredVersionKeys = new Set([
     "26.601.21317+3511",
@@ -2399,6 +2673,24 @@ const runtimePatchRequiredInitialReloadMaxAttempts = 1;
 function randomDebugPort() {
     return 40_000 + ((0, node_crypto_2.randomBytes)(2).readUInt16BE(0) % 20_000);
 }
+function runtimeCdpCommand(cdp, method, params, sessionId, timeoutMs) {
+    return cdpCommandWithTimeout(cdp.send(method, params, sessionId), timeoutMs, `Timed out waiting for CDP ${method}.`);
+}
+async function connectRuntimePatchCdp(connect, debugPort, timeoutMs) {
+    const controller = new AbortController();
+    const pendingConnection = connect(debugPort, controller.signal);
+    try {
+        return await cdpCommandWithTimeout(pendingConnection, timeoutMs, "Timed out waiting for the CDP browser connection.");
+    }
+    catch (error) {
+        controller.abort();
+        void pendingConnection.then((lateConnection) => lateConnection.close(), () => undefined);
+        throw error;
+    }
+}
+function runtimePatchLogError(error) {
+    return error.message.replace(/[\r\n]+/gu, " ").trim() || error.name;
+}
 function responseHeadersForFulfill(headers) {
     const forwarded = [];
     for (const header of headers ?? []) {
@@ -2436,16 +2728,16 @@ function normalizedRuntimeResourceOrigin(resourceUrl) {
         return "";
     }
 }
-async function continueFetchRequest(cdp, requestId, sessionId) {
-    await cdp.send("Fetch.continueRequest", { requestId }, sessionId);
+async function continueFetchRequest(cdp, requestId, sessionId, commandTimeoutMs = runtimePatchCommandTimeoutMs) {
+    await runtimeCdpCommand(cdp, "Fetch.continueRequest", { requestId }, sessionId, commandTimeoutMs);
 }
-async function validateRuntimeFetchOutcomeOrBlock(cdp, requestId, sessionId, validateOutcome, outcome) {
+async function validateRuntimeFetchOutcomeOrBlock(cdp, requestId, sessionId, validateOutcome, outcome, commandTimeoutMs) {
     try {
         validateOutcome?.(outcome);
     }
     catch (error) {
         try {
-            await cdp.send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" }, sessionId);
+            await runtimeCdpCommand(cdp, "Fetch.failRequest", { requestId, errorReason: "BlockedByClient" }, sessionId, commandTimeoutMs);
         }
         catch {
             cdp.close();
@@ -2453,7 +2745,7 @@ async function validateRuntimeFetchOutcomeOrBlock(cdp, requestId, sessionId, val
         throw error;
     }
 }
-async function handleFetchRequestPaused(cdp, patcherSource, params, sessionId, validateOutcome) {
+async function handleFetchRequestPaused(cdp, patcherSource, params, sessionId, validateOutcome, commandTimeoutMs = runtimePatchCommandTimeoutMs) {
     const resourceUrl = params.request.url;
     if (!isRuntimeJavaScriptResource(resourceUrl)) {
         const outcome = {
@@ -2463,42 +2755,20 @@ async function handleFetchRequestPaused(cdp, patcherSource, params, sessionId, v
             resourcePath: normalizedRuntimeResourcePath(resourceUrl),
             bodySha256: "",
         };
-        await validateRuntimeFetchOutcomeOrBlock(cdp, params.requestId, sessionId, validateOutcome, outcome);
-        await continueFetchRequest(cdp, params.requestId, sessionId);
+        await validateRuntimeFetchOutcomeOrBlock(cdp, params.requestId, sessionId, validateOutcome, outcome, commandTimeoutMs);
+        await continueFetchRequest(cdp, params.requestId, sessionId, commandTimeoutMs);
         return outcome;
     }
     debugRuntime(`paused ${resourceUrl}`);
     let bodyResult;
     try {
-        bodyResult = await cdp.send("Fetch.getResponseBody", {
-            requestId: params.requestId,
-        }, sessionId);
+        bodyResult = await runtimeCdpCommand(cdp, "Fetch.getResponseBody", { requestId: params.requestId }, sessionId, commandTimeoutMs);
     }
-    catch {
-        debugRuntime(`getResponseBody failed ${resourceUrl}`);
-        const outcome = {
-            labels: [],
-            sawJavaScript: true,
-            resourceOrigin: normalizedRuntimeResourceOrigin(resourceUrl),
-            resourcePath: normalizedRuntimeResourcePath(resourceUrl),
-            bodySha256: "",
-        };
-        await validateRuntimeFetchOutcomeOrBlock(cdp, params.requestId, sessionId, validateOutcome, outcome);
-        await continueFetchRequest(cdp, params.requestId, sessionId);
-        return outcome;
+    catch (error) {
+        throw new Error(`Failed to read runtime response body for ${resourceUrl}: ${asError(error).message}`);
     }
     if (typeof bodyResult.body !== "string") {
-        debugRuntime(`missing body ${resourceUrl}`);
-        const outcome = {
-            labels: [],
-            sawJavaScript: true,
-            resourceOrigin: normalizedRuntimeResourceOrigin(resourceUrl),
-            resourcePath: normalizedRuntimeResourcePath(resourceUrl),
-            bodySha256: "",
-        };
-        await validateRuntimeFetchOutcomeOrBlock(cdp, params.requestId, sessionId, validateOutcome, outcome);
-        await continueFetchRequest(cdp, params.requestId, sessionId);
-        return outcome;
+        throw new Error(`Runtime response body was missing for ${resourceUrl}.`);
     }
     const body = bodyResult.base64Encoded
         ? Buffer.from(bodyResult.body, "base64").toString("utf8")
@@ -2519,8 +2789,8 @@ async function handleFetchRequestPaused(cdp, patcherSource, params, sessionId, v
             resourcePath,
             bodySha256,
         };
-        await validateRuntimeFetchOutcomeOrBlock(cdp, params.requestId, sessionId, validateOutcome, outcome);
-        await continueFetchRequest(cdp, params.requestId, sessionId);
+        await validateRuntimeFetchOutcomeOrBlock(cdp, params.requestId, sessionId, validateOutcome, outcome, commandTimeoutMs);
+        await continueFetchRequest(cdp, params.requestId, sessionId, commandTimeoutMs);
         return outcome;
     }
     const labels = [
@@ -2534,20 +2804,20 @@ async function handleFetchRequestPaused(cdp, patcherSource, params, sessionId, v
         resourcePath,
         bodySha256,
     };
-    await validateRuntimeFetchOutcomeOrBlock(cdp, params.requestId, sessionId, validateOutcome, outcome);
+    await validateRuntimeFetchOutcomeOrBlock(cdp, params.requestId, sessionId, validateOutcome, outcome, commandTimeoutMs);
     if (patchResult.matchedLabels.length > 0) {
         debugRuntime(`matched ${resourceUrl}: ${patchResult.matchedLabels.join(", ")}`);
     }
     if (patchResult.content === body) {
-        await continueFetchRequest(cdp, params.requestId, sessionId);
+        await continueFetchRequest(cdp, params.requestId, sessionId, commandTimeoutMs);
         return outcome;
     }
-    await cdp.send("Fetch.fulfillRequest", {
+    await runtimeCdpCommand(cdp, "Fetch.fulfillRequest", {
         requestId: params.requestId,
         responseCode: params.responseStatusCode ?? 200,
         responseHeaders: responseHeadersForFulfill(params.responseHeaders),
         body: Buffer.from(patchResult.content, "utf8").toString("base64"),
-    }, sessionId);
+    }, sessionId, commandTimeoutMs);
     return outcome;
 }
 function runtimePatchSessionLostMessage(error) {
@@ -2623,8 +2893,8 @@ function runtimePatcherSourceForContext(patcherSource, context) {
     }
     return runtimePatcherSourceForVersion(patcherSource, context.metadata.versionKey);
 }
-async function enableRuntimePatchInterception(cdp, options) {
-    await cdp.send("Fetch.enable", {
+async function enableRuntimePatchInterception(cdp, options, commandTimeoutMs) {
+    await runtimeCdpCommand(cdp, "Fetch.enable", {
         patterns: [
             {
                 urlPattern: "app://*/assets/*.js",
@@ -2639,10 +2909,10 @@ async function enableRuntimePatchInterception(cdp, options) {
                 requestStage: "Response",
             },
         ],
-    }, options.sessionId);
+    }, options.sessionId, commandTimeoutMs);
     debugRuntime("Fetch.enable ok");
     if (options.waitForInitialLoad || options.reload) {
-        await cdp.send("Page.enable", undefined, options.sessionId);
+        await runtimeCdpCommand(cdp, "Page.enable", undefined, options.sessionId, commandTimeoutMs);
         debugRuntime("Page.enable ok");
     }
     if (options.waitForInitialLoad) {
@@ -2650,19 +2920,31 @@ async function enableRuntimePatchInterception(cdp, options) {
         debugRuntime("initial page load settled");
     }
     if (options.reload) {
-        await cdp.send("Page.reload", { ignoreCache: true }, options.sessionId);
+        await runtimeCdpCommand(cdp, "Page.reload", { ignoreCache: true }, options.sessionId, commandTimeoutMs);
         debugRuntime("Page.reload ok");
     }
 }
-async function enableRuntimePatchAutoAttach(cdp) {
-    await cdp.send("Target.setAutoAttach", {
+async function enableRuntimePatchAutoAttach(cdp, commandTimeoutMs) {
+    await runtimeCdpCommand(cdp, "Target.setAutoAttach", {
         autoAttach: true,
         waitForDebuggerOnStart: true,
         flatten: true,
-    });
+    }, undefined, commandTimeoutMs);
     debugRuntime("Target.setAutoAttach ok");
 }
-async function preloadRuntimePatchResources(cdp, sessionId, resourcePaths, sleepFor) {
+async function runtimeRendererOriginFromLocation(cdp, sessionId, commandTimeoutMs) {
+    const evaluation = await runtimeCdpCommand(cdp, "Runtime.evaluate", {
+        expression: "globalThis.location?.href ?? ''",
+        returnByValue: true,
+    }, sessionId, Math.min(commandTimeoutMs, runtimePatchRendererLocationTimeoutMs));
+    if (evaluation?.exceptionDetails) {
+        return "";
+    }
+    return typeof evaluation?.result?.value === "string"
+        ? normalizedRuntimeResourceOrigin(evaluation.result.value)
+        : "";
+}
+async function preloadRuntimePatchResources(cdp, sessionId, resourcePaths, sleepFor, commandTimeoutMs) {
     if (resourcePaths.length === 0) {
         return;
     }
@@ -2670,11 +2952,11 @@ async function preloadRuntimePatchResources(cdp, sessionId, resourcePaths, sleep
     const expression = `Promise.all(${resources}.map(async resourcePath=>{const resourceUrl=new URL(resourcePath,document.baseURI).href;const response=await fetch(resourceUrl);if(!response.ok)throw new Error(\`codexfast preload failed: \${response.status} \${resourceUrl}\`);await response.text();return resourceUrl}))`;
     for (let attempt = 1; attempt <= runtimePatchPreloadMaxAttempts; attempt += 1) {
         try {
-            const evaluation = await cdp.send("Runtime.evaluate", {
+            const evaluation = await runtimeCdpCommand(cdp, "Runtime.evaluate", {
                 expression,
                 awaitPromise: true,
                 returnByValue: true,
-            }, sessionId);
+            }, sessionId, commandTimeoutMs);
             const exceptionMessage = evaluation?.exceptionDetails?.exception?.description ??
                 evaluation?.exceptionDetails?.text;
             if (exceptionMessage) {
@@ -2698,11 +2980,20 @@ async function preloadRuntimePatchResources(cdp, sessionId, resourcePaths, sleep
 async function startRuntimePatchSession(debugPort, patcherSource, requiredInitialLabels, initialResourcePaths = [], expectedInitialTargets = [], dependencies = {}) {
     const connect = dependencies.connect ?? waitForRuntimeBrowserConnection;
     const sleepFor = dependencies.sleep ?? sleep;
-    let cdp = await connect(debugPort);
+    const commandTimeoutMs = dependencies.commandTimeoutMs ??
+        runtimePatchCommandTimeoutMs;
+    const connectTimeoutMs = dependencies.connectTimeoutMs ??
+        runtimePatchBrowserConnectTimeoutMs;
+    const reconnectObservationTimeoutMs = dependencies.reconnectObservationTimeoutMs ??
+        runtimePatchReconnectObservationTimeoutMs;
+    const reconnectObservationMaxAttempts = Math.max(1, Math.ceil(reconnectObservationTimeoutMs / runtimePatchReconnectObservationPollMs));
+    let cdp = await connectRuntimePatchCdp(connect, debugPort, connectTimeoutMs);
     const observedLabels = new Set();
     const rendererOriginsBySession = new Map();
     const pausedRequestHandlers = new Set();
     const targetSetupHandlers = new Set();
+    const initialPreloadHandlers = new Set();
+    const reconnectObservationTasks = new Set();
     const reconnectObservedLabelsByGeneration = new Map();
     const attachedPageSessions = new Set();
     let activePageSessionId = null;
@@ -2716,32 +3007,118 @@ async function startRuntimePatchSession(debugPort, patcherSource, requiredInitia
     let reconnectSetupError = null;
     let connectionGeneration = 0;
     let heartbeatTimer = null;
+    let reconnectTask = null;
+    let reconnectConnectController = null;
     let resolveLost = () => undefined;
+    let resolveCloseSignal = () => undefined;
+    let closeSignalResolved = false;
     let markInitialObserved = () => undefined;
     let markInitialJavaScriptTraffic = () => undefined;
     const lost = new Promise((resolve) => {
         resolveLost = resolve;
     });
+    const closeSignal = new Promise((resolve) => {
+        resolveCloseSignal = resolve;
+    });
+    const signalClosed = () => {
+        if (closeSignalResolved) {
+            return;
+        }
+        closeSignalResolved = true;
+        resolveCloseSignal();
+    };
     const stopHeartbeat = () => {
         if (heartbeatTimer) {
             clearInterval(heartbeatTimer);
             heartbeatTimer = null;
         }
     };
+    const abortReconnectConnection = () => {
+        reconnectConnectController?.abort();
+    };
     const markSessionLost = (error) => {
         if (closed) {
             return;
         }
         closed = true;
+        connectionGeneration += 1;
+        signalClosed();
         stopHeartbeat();
+        abortReconnectConnection();
         cdp.close();
         resolveLost(error);
+    };
+    const generationIsActive = (generation) => !closed && generation === connectionGeneration;
+    const drainRuntimeHandlers = async () => {
+        while (targetSetupHandlers.size > 0 ||
+            initialPreloadHandlers.size > 0 ||
+            pausedRequestHandlers.size > 0) {
+            await Promise.allSettled([
+                ...targetSetupHandlers,
+                ...initialPreloadHandlers,
+                ...pausedRequestHandlers,
+            ]);
+        }
+    };
+    const drainReconnectObservationTasks = async () => {
+        while (reconnectObservationTasks.size > 0) {
+            await Promise.allSettled([...reconnectObservationTasks]);
+        }
+    };
+    const waitForReconnectDelay = async (milliseconds) => {
+        const outcome = await Promise.race([
+            sleepFor(milliseconds).then(() => "elapsed"),
+            closeSignal.then(() => "closed"),
+        ]);
+        return outcome === "elapsed" && !closed;
+    };
+    const connectForReconnect = async () => {
+        const controller = new AbortController();
+        reconnectConnectController = controller;
+        const pendingConnection = connect(debugPort, controller.signal);
+        const timedConnection = cdpCommandWithTimeout(pendingConnection, connectTimeoutMs, "Timed out waiting for the CDP browser connection.");
+        try {
+            const outcome = await Promise.race([
+                timedConnection.then((connection) => ({
+                    type: "connected",
+                    connection,
+                })),
+                closeSignal.then(() => ({ type: "closed" })),
+            ]);
+            if (outcome.type === "closed") {
+                controller.abort();
+                try {
+                    const lateConnection = await timedConnection;
+                    lateConnection.close();
+                }
+                catch {
+                    // The cancelled connection is fully drained before close() returns.
+                }
+                return null;
+            }
+            if (closed) {
+                outcome.connection.close();
+                return null;
+            }
+            return outcome.connection;
+        }
+        catch (error) {
+            controller.abort();
+            void pendingConnection.then((lateConnection) => lateConnection.close(), () => undefined);
+            throw error;
+        }
+        finally {
+            if (reconnectConnectController === controller) {
+                reconnectConnectController = null;
+            }
+        }
     };
     const reconnectRuntimePatchSession = async (reason) => {
         if (closed || reconnecting) {
             return;
         }
         reconnecting = true;
+        connectionGeneration += 1;
         cdp.close();
         let lastError = reason;
         for (let attempt = 1; attempt <= runtimePatchReconnectMaxAttempts; attempt += 1) {
@@ -2750,42 +3127,90 @@ async function startRuntimePatchSession(debugPort, patcherSource, requiredInitia
                 return;
             }
             if (attempt > 1) {
-                await sleepFor(runtimePatchReconnectDelayMs);
+                if (!await waitForReconnectDelay(runtimePatchReconnectDelayMs)) {
+                    reconnecting = false;
+                    return;
+                }
             }
-            printLine(`Runtime patch session reconnecting (${attempt}/${runtimePatchReconnectMaxAttempts})...`);
+            printLine(`Runtime patch session reconnecting (${attempt}/${runtimePatchReconnectMaxAttempts}); reason: ${runtimePatchLogError(reason)}.`);
+            let reconnectGeneration = null;
             try {
                 reconnectSetupError = null;
                 activePageSessionId = null;
                 attachedPageSessions.clear();
                 rendererOriginsBySession.clear();
-                const nextCdp = await connect(debugPort);
+                const nextCdp = await connectForReconnect();
+                if (!nextCdp || closed) {
+                    nextCdp?.close();
+                    reconnecting = false;
+                    return;
+                }
                 connectionGeneration += 1;
-                const reconnectGeneration = connectionGeneration;
+                const activeReconnectGeneration = connectionGeneration;
+                reconnectGeneration = activeReconnectGeneration;
                 const reconnectObservedLabels = new Set();
-                reconnectObservedLabelsByGeneration.set(reconnectGeneration, reconnectObservedLabels);
+                reconnectObservedLabelsByGeneration.set(activeReconnectGeneration, reconnectObservedLabels);
                 cdp = nextCdp;
-                registerRuntimeFetchHandler(reconnectGeneration);
-                registerRuntimeTargetHandler(reconnectGeneration);
-                await enableRuntimePatchAutoAttach(cdp);
-                for (let attachAttempt = 1; attachAttempt <= runtimePatchReconnectAttachMaxAttempts; attachAttempt += 1) {
-                    await Promise.resolve();
-                    while (targetSetupHandlers.size > 0) {
-                        await Promise.all([...targetSetupHandlers]);
+                registerRuntimeFetchHandler(activeReconnectGeneration);
+                registerRuntimeTargetHandler(activeReconnectGeneration);
+                const observeReconnect = async () => {
+                    await enableRuntimePatchAutoAttach(cdp, commandTimeoutMs);
+                    if (!generationIsActive(activeReconnectGeneration)) {
+                        return;
                     }
-                    while (pausedRequestHandlers.size > 0) {
-                        await Promise.all([...pausedRequestHandlers]);
+                    let preloadedSessionId = null;
+                    for (let observationAttempt = 1; observationAttempt <= reconnectObservationMaxAttempts; observationAttempt += 1) {
+                        await drainRuntimeHandlers();
+                        if (!generationIsActive(activeReconnectGeneration)) {
+                            return;
+                        }
+                        if (reconnectSetupError) {
+                            throw reconnectSetupError;
+                        }
+                        const boundSessionId = activePageSessionId &&
+                            rendererOriginsBySession.has(activePageSessionId)
+                            ? activePageSessionId
+                            : [...attachedPageSessions].find((sessionId) => rendererOriginsBySession.has(sessionId)) ?? null;
+                        if (boundSessionId && preloadedSessionId !== boundSessionId) {
+                            await preloadRuntimePatchResources(nextCdp, boundSessionId, initialResourcePaths, async (milliseconds) => {
+                                if (!await waitForReconnectDelay(milliseconds)) {
+                                    throw new Error("Runtime patch session closed.");
+                                }
+                            }, commandTimeoutMs);
+                            if (!generationIsActive(activeReconnectGeneration)) {
+                                return;
+                            }
+                            preloadedSessionId = boundSessionId;
+                            await drainRuntimeHandlers();
+                        }
+                        const missingReconnectLabels = missingRuntimePatchRequiredInitialLabels(reconnectObservedLabels, requiredInitialLabels);
+                        if (boundSessionId && missingReconnectLabels.length === 0) {
+                            return;
+                        }
+                        if (observationAttempt < reconnectObservationMaxAttempts) {
+                            if (!await waitForReconnectDelay(runtimePatchReconnectObservationPollMs)) {
+                                return;
+                            }
+                        }
                     }
-                    if (reconnectSetupError) {
-                        throw reconnectSetupError;
-                    }
-                    const hasBoundAppRenderer = [...attachedPageSessions].some((sessionId) => rendererOriginsBySession.has(sessionId));
-                    const missingReconnectLabels = missingRuntimePatchRequiredInitialLabels(reconnectObservedLabels, requiredInitialLabels);
-                    if (hasBoundAppRenderer && missingReconnectLabels.length === 0) {
-                        break;
-                    }
-                    if (attachAttempt < runtimePatchReconnectAttachMaxAttempts) {
-                        await sleepFor(runtimePatchReconnectAttachDelayMs);
-                    }
+                };
+                let observationTask;
+                observationTask = observeReconnect().finally(() => {
+                    reconnectObservationTasks.delete(observationTask);
+                });
+                reconnectObservationTasks.add(observationTask);
+                await cdpCommandWithTimeout(Promise.race([
+                    observationTask,
+                    closeSignal.then(() => undefined),
+                ]), reconnectObservationTimeoutMs, `Timed out after ${reconnectObservationTimeoutMs}ms while observing the reconnected renderer.`);
+                if (!generationIsActive(activeReconnectGeneration)) {
+                    nextCdp.close();
+                    reconnecting = false;
+                    return;
+                }
+                await drainRuntimeHandlers();
+                if (reconnectSetupError) {
+                    throw reconnectSetupError;
                 }
                 const hasBoundAppRenderer = [...attachedPageSessions].some((sessionId) => rendererOriginsBySession.has(sessionId));
                 if (!hasBoundAppRenderer) {
@@ -2802,12 +3227,38 @@ async function startRuntimePatchSession(debugPort, patcherSource, requiredInitia
             }
             catch (error) {
                 lastError = asError(error);
-                reconnectObservedLabelsByGeneration.delete(connectionGeneration);
+                if (reconnectGeneration !== null) {
+                    reconnectObservedLabelsByGeneration.delete(reconnectGeneration);
+                    if (connectionGeneration === reconnectGeneration) {
+                        connectionGeneration += 1;
+                    }
+                }
                 cdp.close();
+                if (closed) {
+                    reconnecting = false;
+                    return;
+                }
+                printLine(`Runtime patch reconnect attempt ${attempt} failed: ${runtimePatchLogError(lastError)}`);
             }
         }
         reconnecting = false;
         markSessionLost(new Error(runtimePatchSessionLostMessage(lastError)));
+    };
+    const scheduleRuntimePatchReconnect = (reason) => {
+        if (closed || reconnecting) {
+            return;
+        }
+        let task;
+        task = reconnectRuntimePatchSession(reason)
+            .catch((error) => {
+            markSessionLost(new Error(runtimePatchSessionLostMessage(asError(error))));
+        })
+            .finally(() => {
+            if (reconnectTask === task) {
+                reconnectTask = null;
+            }
+        });
+        reconnectTask = task;
     };
     const handleConnectionFailure = (generation, error) => {
         if (closed || generation !== connectionGeneration) {
@@ -2821,7 +3272,24 @@ async function startRuntimePatchSession(debugPort, patcherSource, requiredInitia
             reconnectSetupError = error;
             return;
         }
-        void reconnectRuntimePatchSession(error);
+        scheduleRuntimePatchReconnect(error);
+    };
+    const beginInitialResourcePreload = (attachedCdp, sessionId, generation) => {
+        if (initialCompleted ||
+            initialPreloadStarted ||
+            initialResourcePaths.length === 0 ||
+            !generationIsActive(generation) ||
+            !rendererOriginsBySession.has(sessionId)) {
+            return null;
+        }
+        initialPreloadStarted = true;
+        const task = preloadRuntimePatchResources(attachedCdp, sessionId, initialResourcePaths, sleepFor, commandTimeoutMs);
+        initialPreloadHandlers.add(task);
+        task.then(() => initialPreloadHandlers.delete(task), (error) => {
+            initialPreloadHandlers.delete(task);
+            handleConnectionFailure(generation, asError(error));
+        });
+        return task;
     };
     const rejectRuntimeFetchOutcome = (error) => {
         if (!initialCompleted) {
@@ -2838,7 +3306,13 @@ async function startRuntimePatchSession(debugPort, patcherSource, requiredInitia
             handleConnectionFailure(generation, error);
         });
         attachedCdp.on("Fetch.requestPaused", (params, message) => {
+            if (!generationIsActive(generation)) {
+                return;
+            }
             const task = handleFetchRequestPaused(attachedCdp, patcherSource, params, message.sessionId, (outcome) => {
+                if (!generationIsActive(generation)) {
+                    return;
+                }
                 const rendererSessionId = message.sessionId ?? "";
                 let expectedOrigin = rendererSessionId
                     ? rendererOriginsBySession.get(rendererSessionId) ?? ""
@@ -2850,6 +3324,7 @@ async function startRuntimePatchSession(debugPort, patcherSource, requiredInitia
                     if (!expectedOrigin) {
                         expectedOrigin = outcome.resourceOrigin;
                         rendererOriginsBySession.set(rendererSessionId, expectedOrigin);
+                        activePageSessionId = rendererSessionId;
                         debugRuntime(`bound pending renderer session ${rendererSessionId} to origin ${expectedOrigin}`);
                     }
                     else if (outcome.resourceOrigin !== expectedOrigin) {
@@ -2875,7 +3350,10 @@ async function startRuntimePatchSession(debugPort, patcherSource, requiredInitia
                         rejectRuntimeFetchOutcome(new Error(`Runtime target ${expectedTarget.label} was observed from unexpected renderer origin ${outcome.resourceOrigin || "<unknown>"}, resource ${outcome.resourcePath || "<unknown>"} or body hash.`));
                     }
                 }
-            }).then((outcome) => {
+            }, commandTimeoutMs).then((outcome) => {
+                if (!generationIsActive(generation)) {
+                    return;
+                }
                 const { labels } = outcome;
                 const reconnectObservedLabels = reconnectObservedLabelsByGeneration.get(generation);
                 let sawNewLabel = false;
@@ -2894,6 +3372,11 @@ async function startRuntimePatchSession(debugPort, patcherSource, requiredInitia
                 }
                 if (initialCompleted && sawNewLabel) {
                     debugRuntime(`patched labels now active: ${[...observedLabels].join(", ")}`);
+                }
+                const rendererSessionId = message.sessionId;
+                if (rendererSessionId) {
+                    const preloadTask = beginInitialResourcePreload(attachedCdp, rendererSessionId, generation);
+                    void preloadTask?.catch(() => undefined);
                 }
             });
             pausedRequestHandlers.add(task);
@@ -2916,47 +3399,79 @@ async function startRuntimePatchSession(debugPort, patcherSource, requiredInitia
                 }
                 if (targetType !== "page") {
                     if (attached.waitingForDebugger) {
-                        await attachedCdp.send("Runtime.runIfWaitingForDebugger", undefined, attached.sessionId);
+                        await runtimeCdpCommand(attachedCdp, "Runtime.runIfWaitingForDebugger", undefined, attached.sessionId, commandTimeoutMs);
                     }
                     return;
                 }
-                const targetOrigin = normalizedRuntimeResourceOrigin(targetUrl);
-                const pendingAppRenderer = targetUrl === "" && attached.waitingForDebugger === true;
+                let targetOrigin = normalizedRuntimeResourceOrigin(targetUrl);
+                const pendingAppRenderer = targetUrl === "";
                 if (!targetOrigin && !pendingAppRenderer) {
-                    handleConnectionFailure(generation, new Error(`Refusing non-app renderer target ${targetUrl || "<empty>"}.`));
+                    if (attached.waitingForDebugger) {
+                        await runtimeCdpCommand(attachedCdp, "Runtime.runIfWaitingForDebugger", undefined, attached.sessionId, commandTimeoutMs);
+                    }
+                    debugRuntime(`ignored non-app page target ${targetUrl}`);
                     return;
                 }
-                activePageSessionId = attached.sessionId;
                 attachedPageSessions.add(attached.sessionId);
                 if (targetOrigin) {
                     rendererOriginsBySession.set(attached.sessionId, targetOrigin);
+                    activePageSessionId = attached.sessionId;
                 }
                 debugRuntime(`attached target type=${targetType} url=${targetUrl || "<pending>"} session=${attached.sessionId}`);
                 await enableRuntimePatchInterception(attachedCdp, {
                     sessionId: attached.sessionId,
                     waitForInitialLoad: false,
-                    reload: !attached.waitingForDebugger,
-                });
+                    reload: false,
+                }, commandTimeoutMs);
+                if (!generationIsActive(generation)) {
+                    return;
+                }
                 if (attached.waitingForDebugger) {
-                    await attachedCdp.send("Runtime.runIfWaitingForDebugger", undefined, attached.sessionId);
+                    await runtimeCdpCommand(attachedCdp, "Runtime.runIfWaitingForDebugger", undefined, attached.sessionId, commandTimeoutMs);
                     debugRuntime("Runtime.runIfWaitingForDebugger ok");
+                }
+                if (!targetOrigin) {
+                    try {
+                        targetOrigin = await runtimeRendererOriginFromLocation(attachedCdp, attached.sessionId, commandTimeoutMs);
+                    }
+                    catch (error) {
+                        debugRuntime(`could not resolve pending renderer location for session ${attached.sessionId}: ${runtimePatchLogError(asError(error))}`);
+                    }
+                    if (!generationIsActive(generation)) {
+                        return;
+                    }
+                    if (targetOrigin) {
+                        rendererOriginsBySession.set(attached.sessionId, targetOrigin);
+                        activePageSessionId = attached.sessionId;
+                        debugRuntime(`bound pending renderer session ${attached.sessionId} from location ${targetOrigin}`);
+                    }
+                }
+                if (!attached.waitingForDebugger && targetOrigin) {
+                    await runtimeCdpCommand(attachedCdp, "Page.reload", { ignoreCache: true }, attached.sessionId, commandTimeoutMs);
+                    debugRuntime("Page.reload ok");
                 }
                 if (!initialCompleted &&
                     !initialPreloadStarted &&
                     initialResourcePaths.length > 0) {
-                    initialPreloadStarted = true;
                     for (let originAttempt = 1; originAttempt <= runtimePatchRendererOriginMaxAttempts; originAttempt += 1) {
                         if (rendererOriginsBySession.has(attached.sessionId)) {
                             break;
                         }
                         if (originAttempt < runtimePatchRendererOriginMaxAttempts) {
                             await sleepFor(runtimePatchRendererOriginRetryDelayMs);
+                            if (!generationIsActive(generation)) {
+                                return;
+                            }
                         }
                     }
                     if (!rendererOriginsBySession.has(attached.sessionId)) {
-                        throw new Error("Renderer did not navigate to an app origin before runtime resource preload.");
+                        debugRuntime(`pending renderer session ${attached.sessionId} did not bind to an app origin`);
+                        return;
                     }
-                    await preloadRuntimePatchResources(attachedCdp, attached.sessionId, initialResourcePaths, sleepFor);
+                    const preloadTask = beginInitialResourcePreload(attachedCdp, attached.sessionId, generation);
+                    if (preloadTask) {
+                        await preloadTask;
+                    }
                 }
             })();
             targetSetupHandlers.add(task);
@@ -2964,6 +3479,9 @@ async function startRuntimePatchSession(debugPort, patcherSource, requiredInitia
             return task;
         });
         attachedCdp.on("Target.detachedFromTarget", (params) => {
+            if (!generationIsActive(generation)) {
+                return;
+            }
             const detached = params;
             if (!detached.sessionId) {
                 return;
@@ -2971,7 +3489,7 @@ async function startRuntimePatchSession(debugPort, patcherSource, requiredInitia
             attachedPageSessions.delete(detached.sessionId);
             rendererOriginsBySession.delete(detached.sessionId);
             if (activePageSessionId === detached.sessionId) {
-                activePageSessionId = [...attachedPageSessions][0] ?? null;
+                activePageSessionId = [...attachedPageSessions].find((sessionId) => rendererOriginsBySession.has(sessionId)) ?? null;
             }
         });
     };
@@ -2981,11 +3499,11 @@ async function startRuntimePatchSession(debugPort, patcherSource, requiredInitia
                 return;
             }
             if (cdp.isClosed()) {
-                void reconnectRuntimePatchSession(new Error("CDP WebSocket connection closed."));
+                scheduleRuntimePatchReconnect(new Error("CDP WebSocket connection closed."));
                 return;
             }
             void cdpCommandWithTimeout(cdp.send("Browser.getVersion"), runtimePatchHeartbeatTimeoutMs, "Timed out waiting for CDP heartbeat.").catch((error) => {
-                void reconnectRuntimePatchSession(asError(error));
+                scheduleRuntimePatchReconnect(asError(error));
             });
         }, runtimePatchHeartbeatIntervalMs);
     };
@@ -3074,8 +3592,7 @@ async function startRuntimePatchSession(debugPort, patcherSource, requiredInitia
                     finish();
                     return;
                 }
-                void cdp
-                    .send("Page.reload", { ignoreCache: true }, activePageSessionId)
+                void runtimeCdpCommand(cdp, "Page.reload", { ignoreCache: true }, activePageSessionId, commandTimeoutMs)
                     .then(() => {
                     debugRuntime("Page.reload retry for required runtime targets ok");
                 })
@@ -3122,7 +3639,7 @@ async function startRuntimePatchSession(debugPort, patcherSource, requiredInitia
         registerRuntimeFetchHandler(connectionGeneration);
         registerRuntimeTargetHandler(connectionGeneration);
         try {
-            await enableRuntimePatchAutoAttach(cdp);
+            await enableRuntimePatchAutoAttach(cdp, commandTimeoutMs);
         }
         catch (error) {
             failSession(asError(error));
@@ -3132,10 +3649,21 @@ async function startRuntimePatchSession(debugPort, patcherSource, requiredInitia
         startHeartbeat();
         return {
             patchedLabels,
-            close: () => {
-                closed = true;
+            close: async () => {
+                if (!closed) {
+                    closed = true;
+                    connectionGeneration += 1;
+                    signalClosed();
+                }
                 stopHeartbeat();
+                abortReconnectConnection();
                 cdp.close();
+                const pendingReconnect = reconnectTask;
+                if (pendingReconnect) {
+                    await pendingReconnect.catch(() => undefined);
+                }
+                await drainReconnectObservationTasks();
+                await drainRuntimeHandlers();
             },
             lost,
         };
@@ -3143,8 +3671,13 @@ async function startRuntimePatchSession(debugPort, patcherSource, requiredInitia
     finally {
         if (!keepSessionOpen) {
             closed = true;
+            connectionGeneration += 1;
+            signalClosed();
             stopHeartbeat();
+            abortReconnectConnection();
             cdp.close();
+            await drainReconnectObservationTasks();
+            await drainRuntimeHandlers();
         }
     }
 }
@@ -3246,26 +3779,28 @@ async function runRuntimeLaunch(options) {
             session.lost.then((error) => ({ type: "session-lost", error })),
         ]);
         if (outcome.type === "session-lost") {
-            session.close();
+            const lostSession = session;
             session = null;
             if (launchedProcess) {
                 await terminateRuntimeLaunchProcess(launchedProcess);
             }
+            await lostSession.close();
             printRuntimePatchSessionLost(outcome.error);
             return printExitBlock(1).exitCode;
         }
-        session.close();
+        await session.close();
         session = null;
         printExitCode(outcome.exitCode);
         return outcome.exitCode;
     }
     catch (error) {
-        if (session) {
-            session.close();
-            session = null;
-        }
+        const failedSession = session;
+        session = null;
         if (launchedProcess) {
             await terminateRuntimeLaunchProcess(launchedProcess);
+        }
+        if (failedSession) {
+            await failedSession.close();
         }
         printLine(`Runtime launch failed: ${asError(error).message}`);
     }
@@ -3529,8 +4064,8 @@ function applyWindowsRuntimeCompatibility(context, patcherSource, supportedWindo
     context.runtimeCompatibility = profile;
     context.metadata.supported = true;
     context.metadata.compatibility = knownVersionDescription
-        ? `supported (${knownVersionDescription}); read-only runtime signatures verified; runtime target verification required`
-        : "signature-compatible update (unlisted version); all required read-only runtime signatures verified; runtime target verification required";
+        ? `supported (${knownVersionDescription}); runtime target patterns statically verified; runtime target verification required`
+        : "unlisted registered update; all required runtime target patterns statically verified; runtime target verification required";
 }
 function verifyWindowsRuntimeCompatibilitySnapshot(context) {
     const profile = context.runtimeCompatibility;
@@ -3873,7 +4408,7 @@ function printUsage() {
     printLine('');
     printLine('Commands:');
     printLine('  launch             Launch Codex with runtime patches');
-    printLine('  inspect            Inspect Windows compatibility without launching Codex');
+    printLine('  inspect [--json]   Inspect Windows compatibility without launching Codex');
     printLine('  version            Print the codexfast version');
     printLine('  help               Show this help');
 }
@@ -3962,6 +4497,16 @@ async function main() {
         printUsage();
         return 1;
     }
+    if (isPublicInspectCommand(command)) {
+        return runInspectCommand({
+            context,
+            args: args.slice(1),
+            packageVersion: __PACKAGE_VERSION__,
+            patcherSource: __PATCHER_SOURCE__,
+            supportedWindowsAppVersions: SUPPORTED_WINDOWS_APP_VERSIONS,
+            printActionHeader: () => printActionHeader('inspect'),
+        });
+    }
     if (!checkRequirements({
         context,
         supportedAppVersions: SUPPORTED_APP_VERSIONS,
@@ -3969,20 +4514,6 @@ async function main() {
         patcherSource: __PATCHER_SOURCE__,
     })) {
         return 1;
-    }
-    if (isPublicInspectCommand(command)) {
-        if (context.platform !== 'win32') {
-            printLine('The inspect command is currently available for Windows MSIX only.');
-            return 1;
-        }
-        printActionHeader('inspect');
-        printLine('Verified runtime target resources:');
-        for (const target of context.runtimeCompatibility.targets) {
-            printLine(`  ${target.label} [${target.id}] ${target.state} ${target.archivePath} -> ${target.runtimePath}`);
-        }
-        printLine('');
-        printLine('Compatibility inspection completed without launching Codex.');
-        return 0;
     }
     if (isPublicLaunchCommand(command)) {
         return await runRuntimeLaunchCommand();

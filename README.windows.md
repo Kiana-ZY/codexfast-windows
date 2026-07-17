@@ -2,6 +2,8 @@
 
 本文件说明 Windows 10/11 x64 上的 MSIX runtime launcher。Windows 实现默认使用普通用户权限，不请求 UAC，也不会修改已安装的 Codex 包。
 
+需要按场景操作时，可直接双击打开 [`docs/codexfast-windows-best-practices.html`](./docs/codexfast-windows-best-practices.html)。该离线指南提供首次配置、日常启动、更新后检查、退出回滚、命令复制和可持久化检查清单。
+
 当前已检查的基线：
 
 - Package: `OpenAI.Codex`
@@ -12,7 +14,7 @@
 - Executable: `app\ChatGPT.exe`
 - Frontend archive: `app\resources\app.asar`
 
-`26.707.3748.0` 是已记录的 Windows 基线。更新后的未登记版本不会仅因版本号不同而自动失败：只有当前用户注册的官方 `OpenAI.Codex` / `OpenAI.CodexBeta` 包、manifest/PFN/AUMID/executable 身份完全一致，并且下列 8 个签名在整个 `app.asar` 中各自唯一、替换后可复核时，才会被标记为 `signature-compatible update`。这个状态只表示静态签名兼容，不等于已经完成真实 UI 和请求验证。
+`26.707.3748.0` 是已记录的 Windows 基线。更新后、尚未列入版本记录的版本不会仅因版本号不同而自动失败：只有当前用户注册的官方 `OpenAI.Codex` / `OpenAI.CodexBeta` 包、manifest/PFN/AUMID/executable 身份完全一致，并且下列 8 个 runtime target pattern 在整个 `app.asar` 中各自唯一、替换后可复核时，才会得到 `unlisted-signature-compatible` classification。这个状态只表示静态 target 兼容，不等于已经完成真实 UI 和请求验证。
 
 Windows profile 只启用以下 runtime targets：
 
@@ -54,6 +56,8 @@ corepack pnpm test:windows
 
 ```powershell
 node .\bin\codexfast version
+node .\bin\codexfast inspect
+node .\bin\codexfast inspect --json
 node .\bin\codexfast launch
 ```
 
@@ -77,6 +81,8 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\instal
 - 打开项目目录
 - 在 launcher 已停止时退出托盘
 
+同一项目目录的托盘已经运行时，再次双击快捷方式会向现有托盘发送一次启动请求，不会创建第二个 launcher。不同 clone/项目目录使用各自的 IPC 标识，不会把新目录的启动请求误发给旧目录。
+
 日志保存在项目目录：
 
 ```text
@@ -86,7 +92,7 @@ logs\launcher.previous.log
 
 `launcher.log` 达到 5 MB 后会在下次启动前轮转。托盘仍然需要一个隐藏的 PowerShell/Node 后台进程维持 CDP patch session，但不需要保持可见终端窗口。补丁会话活跃时，`Exit tray` 不会强杀 launcher；应先正常退出 Codex Desktop，等待状态变为 `Stopped`，再退出托盘。
 
-快捷方式的 `ExecutionPolicy Bypass` 只应用于该隐藏 PowerShell 进程，不修改用户或系统的持久执行策略。仓库移动到其他目录后，应从新目录重新运行安装命令。
+日志只写入当前项目目录下的 `logs`，不会写入 `%LOCALAPPDATA%\codexfast`。快捷方式的 `ExecutionPolicy Bypass` 只应用于该隐藏 PowerShell 进程，不修改用户或系统的持久执行策略。安装器会把当时解析到的 `node.exe` 绝对路径写入快捷方式；仓库移动、Node.js 被升级到其他路径，或使用 nvm/fnm 切换并删除旧 Node 后，应从当前项目目录重新运行安装命令。
 
 ## 启动前
 
@@ -107,7 +113,7 @@ logs\launcher.previous.log
 --remote-debugging-address=127.0.0.1
 ```
 
-Stable 始终确定性优先。若已选择的 Stable 包签名不兼容，启动器不会静默改为启动 Beta；需要通过 `CODEXFAST_APP_BUNDLE` 明确选择 Beta。未登记版本必须精确匹配当前用户注册的 `PackageFullName`，单独设置覆盖项不能为未知包建立信任。Publisher、AUMID 的 PFN 和 manifest executable 也必须与所选包一致。
+Stable 始终确定性优先。若已选择的 Stable 包 runtime target pattern 不兼容，启动器不会静默改为启动 Beta；需要通过 `CODEXFAST_APP_BUNDLE` 明确选择 Beta。尚未列入版本记录但已完成当前用户注册的版本必须精确匹配注册的 `PackageFullName`，单独设置覆盖项不能为未知包建立信任。Publisher、AUMID 的 PFN 和 manifest executable 也必须与所选包一致。
 
 如果当前普通用户环境无法发现 MSIX，启动器会输出错误，不会静默提权。可显式配置：
 
@@ -131,9 +137,17 @@ node .\bin\codexfast inspect
 
 它会重新读取当前 MSIX 身份、manifest、`AppxSignature.p7x` 和 `app.asar`，输出兼容来源、ASAR SHA-256、8 个目标的 archive/runtime 路径与状态。每次 `launch` 都会重新执行检查，不保存长期信任缓存；启动后仍必须从对应 renderer origin、资源路径和原始/已补丁 body hash 观察全部 8 个目标。
 
+自动化和版本审计可使用：
+
+```powershell
+node .\bin\codexfast inspect --json
+```
+
+JSON `schemaVersion` 当前为 `1`。成功和预期失败都会在 stdout 输出单个 JSON 文档，失败仍使用非零退出码。报告包含包身份、覆盖项是否启用、manifest/ASAR/`AppxSignature.p7x` 文件快照、兼容来源和 8 个目标；`compatibility.verifiedTargetCount` 只统计通过静态归档/替换门禁的目标，不表示 runtime CDP 已观察到这些目标。报告明确标记未启动 Codex、未执行 runtime 验证、未读取 Provider 配置。`ok: true` 只表示静态门禁通过，不代表 UI、Fast request 或 `http://127.0.0.1:8317/v1` 已经真实验证。
+
 ## Fail-Closed 行为
 
-已登记版本使用 `whitelist-signatures`，未登记但通过全部静态门禁的版本使用 `signature-compatible update`。两者在激活前都必须完成只读全归档检查；Windows 启动成功前还必须从真实 CDP Fetch response 中观察到：
+已登记版本使用 source `whitelist-signatures`，未列入版本记录但通过全部静态门禁的已注册版本使用 source `signature-compatible-update` 和 classification `unlisted-signature-compatible`。两者在激活前都必须完成只读全归档检查；Windows 启动成功前还必须从真实 CDP Fetch response 中观察到：
 
 ```text
 Speed setting
@@ -173,7 +187,7 @@ Windows launcher 不会直接写入或替换：
 
 ## 手动验证
 
-本仓库的自动测试不会启动或关闭真实 Codex。完成本任务后，在已完全退出 Codex 的独立终端中运行：
+本仓库的自动测试不会启动或关闭真实 Codex。需要执行真实验证时，在已完全退出 Codex 的独立终端中运行：
 
 ```powershell
 cd C:\path\to\codexfast-clone
@@ -222,7 +236,9 @@ Remove-Item Env:CODEXFAST_APP_USER_MODEL_ID -ErrorAction SilentlyContinue
 
 ## 更新兼容性
 
-Codex 更新后，启动器会动态发现新的 hashed chunk 名；只要官方注册身份稳定、8 个签名仍各自唯一且内存替换可复核，就可以进入 `signature-compatible update` 状态。签名变化、目标缺失/重复、manifest 或签名文件变化、CDP origin/path/hash 不一致都会 fail closed。先运行 `node .\bin\codexfast inspect`；即使通过，也仍需按上面的手动清单验证 UI、Fast 请求和 `http://127.0.0.1:8317/v1` 路由，完成后才能把该版本记录为真实支持。
+Codex 更新后，启动器会动态发现新的 hashed chunk 名；只要官方当前用户注册身份稳定、8 个 target pattern 仍各自唯一且内存替换可复核，就可以进入 `unlisted-signature-compatible` classification。target pattern 变化、目标缺失/重复、manifest 或 `AppxSignature.p7x` 文件快照变化、CDP origin/path/hash 不一致都会 fail closed。先运行 `node .\bin\codexfast inspect`；即使通过，也仍需按上面的手动清单验证 UI、Fast 请求和 `http://127.0.0.1:8317/v1` 路由，完成后才能把该版本记录为真实支持。
+
+运行期间 CDP 断开时，launcher 最多重连 3 次。每次重连都必须重新绑定 `app://` renderer；对已经运行的 renderer 先 reload，再主动预载动态资源，并在新的 connection generation 内重新观察全部 8 个标签。单次观察有 15 秒墙钟上限，旧连接的迟到响应不能满足新一代验证。任一步失败都会关闭本次启动且仍属于 launcher 的 Codex 进程树并非零退出。
 
 ## License
 
